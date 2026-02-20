@@ -143,9 +143,25 @@ pub fn detect_level(line: &str) -> Level {
         Level::Debug
     } else if upper.contains("TRACE") {
         Level::Trace
+    } else if is_sql_fragment(&upper) {
+        Level::Debug
     } else {
         Level::Unknown
     }
+}
+
+/// Detect SQL statement fragments (multi-line continuation from Postgres, etc.)
+fn is_sql_fragment(upper: &str) -> bool {
+    let trimmed = upper.trim_start();
+    const SQL_KEYWORDS: &[&str] = &[
+        "SELECT ", "INSERT ", "UPDATE ", "DELETE ", "VALUES ", "SET ",
+        "WHERE ", "FROM ", "JOIN ", "LEFT ", "RIGHT ", "INNER ", "OUTER ",
+        "ON CONFLICT", "DO UPDATE", "DO NOTHING", "RETURNING ",
+        "ORDER BY", "GROUP BY", "HAVING ", "LIMIT ", "OFFSET ",
+        "CREATE ", "ALTER ", "DROP ", "EXCLUDED.", "INTO ",
+        ") VALUES", "$1", "CONFLICT (",
+    ];
+    SQL_KEYWORDS.iter().any(|kw| trimmed.contains(kw))
 }
 
 pub fn normalize(line: &str) -> String {
@@ -243,6 +259,54 @@ mod tests {
         assert_eq!(
             detect_level("12345:C 20 Feb 2026 15:03:24.123 - Connecting to MASTER"),
             Level::Info
+        );
+    }
+
+    #[test]
+    fn detect_level_sql_insert() {
+        assert_eq!(
+            detect_level("            INSERT INTO pending_contracts ("),
+            Level::Debug
+        );
+    }
+
+    #[test]
+    fn detect_level_sql_values() {
+        assert_eq!(
+            detect_level("            ) VALUES ($1, $2, $3, $4)"),
+            Level::Debug
+        );
+    }
+
+    #[test]
+    fn detect_level_sql_on_conflict() {
+        assert_eq!(
+            detect_level("            ON CONFLICT (exchange_product_code_id, maturity_year_month)"),
+            Level::Debug
+        );
+    }
+
+    #[test]
+    fn detect_level_sql_do_update() {
+        assert_eq!(
+            detect_level("            DO UPDATE SET"),
+            Level::Debug
+        );
+    }
+
+    #[test]
+    fn detect_level_sql_returning() {
+        assert_eq!(
+            detect_level("            RETURNING id"),
+            Level::Debug
+        );
+    }
+
+    #[test]
+    fn detect_level_sql_select() {
+        assert_eq!(
+            detect_level("  SELECT os.id, u.symbol, pg.id AS product_group_id"),
+            Level::Debug
         );
     }
 
