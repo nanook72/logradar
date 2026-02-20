@@ -108,9 +108,16 @@ pub fn detect_level(line: &str) -> Level {
         Level::Error
     } else if upper.contains("WARN") {
         Level::Warn
-    } else if upper.contains("INFO") {
+    } else if upper.contains("INFO")
+        || upper.contains(" LOG:")
+        || upper.contains("NOTICE:")
+        || upper.contains("HINT:")
+    {
         Level::Info
-    } else if upper.contains("DEBUG") {
+    } else if upper.contains("DEBUG")
+        || upper.contains("STATEMENT:")
+        || upper.contains("DETAIL:")
+    {
         Level::Debug
     } else if upper.contains("TRACE") {
         Level::Trace
@@ -182,6 +189,46 @@ mod tests {
     fn detect_level_case_insensitive() {
         assert_eq!(detect_level("ErRoR in module"), Level::Error);
         assert_eq!(detect_level("info: all good"), Level::Info);
+    }
+
+    #[test]
+    fn detect_level_postgres_log() {
+        assert_eq!(
+            detect_level("2026-02-20 15:03:24 UTC [123] LOG:  checkpoint starting"),
+            Level::Info
+        );
+    }
+
+    #[test]
+    fn detect_level_postgres_statement() {
+        assert_eq!(
+            detect_level("2026-02-20 15:03:24 UTC [123] STATEMENT:  SELECT * FROM users"),
+            Level::Debug
+        );
+    }
+
+    #[test]
+    fn detect_level_postgres_detail() {
+        assert_eq!(
+            detect_level("2026-02-20 15:03:24 UTC [123] DETAIL:  Key already exists"),
+            Level::Debug
+        );
+    }
+
+    #[test]
+    fn detect_level_postgres_notice() {
+        assert_eq!(
+            detect_level("2026-02-20 15:03:24 UTC [123] NOTICE:  table created"),
+            Level::Info
+        );
+    }
+
+    #[test]
+    fn detect_level_postgres_hint() {
+        assert_eq!(
+            detect_level("HINT:  Consider using CREATE INDEX"),
+            Level::Info
+        );
     }
 
     #[test]
