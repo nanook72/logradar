@@ -102,7 +102,24 @@ static NUM_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\b\d+(\.\d+)?\b").unwrap()
 });
 
+// Redis log format: "PID:X DD Mon YYYY HH:MM:SS.mmm <level_char> message"
+// Level chars: # = warning, * = notice/info, - = verbose/info, . = debug
+static REDIS_LEVEL: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^\d+:[A-Z]\s+.+\s([#*.\-])\s").unwrap()
+});
+
 pub fn detect_level(line: &str) -> Level {
+    // Check Redis format first (PID:ROLE ... <char> message)
+    if let Some(caps) = REDIS_LEVEL.captures(line) {
+        return match &caps[1] {
+            "#" => Level::Warn,
+            "*" => Level::Info,
+            "-" => Level::Info,
+            "." => Level::Debug,
+            _ => Level::Unknown,
+        };
+    }
+
     let upper = line.to_ascii_uppercase();
     if upper.contains("FATAL") || upper.contains("PANIC") || upper.contains("ERROR") {
         Level::Error
@@ -189,6 +206,38 @@ mod tests {
     fn detect_level_case_insensitive() {
         assert_eq!(detect_level("ErRoR in module"), Level::Error);
         assert_eq!(detect_level("info: all good"), Level::Info);
+    }
+
+    #[test]
+    fn detect_level_redis_info() {
+        assert_eq!(
+            detect_level("12345:M 20 Feb 2026 15:03:24.123 * Background saving terminated with success"),
+            Level::Info
+        );
+    }
+
+    #[test]
+    fn detect_level_redis_warning() {
+        assert_eq!(
+            detect_level("12345:M 20 Feb 2026 15:03:24.123 # WARNING overcommit_memory is set to 0"),
+            Level::Warn
+        );
+    }
+
+    #[test]
+    fn detect_level_redis_debug() {
+        assert_eq!(
+            detect_level("12345:M 20 Feb 2026 15:03:24.123 . some debug info"),
+            Level::Debug
+        );
+    }
+
+    #[test]
+    fn detect_level_redis_verbose() {
+        assert_eq!(
+            detect_level("12345:C 20 Feb 2026 15:03:24.123 - Connecting to MASTER"),
+            Level::Info
+        );
     }
 
     #[test]
