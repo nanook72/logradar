@@ -98,6 +98,11 @@ static DUR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\b\d+(\.\d+)?\s?(ms|s|us|µs|ns)\b").unwrap()
 });
 
+// Bracketed PID: [12345] — common in Postgres, nginx, syslog
+static PID_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\[\d+\]").unwrap()
+});
+
 static NUM_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\b\d+(\.\d+)?\b").unwrap()
 });
@@ -150,8 +155,9 @@ pub fn normalize(line: &str) -> String {
     let c = IP_RE.replace_all(&b, "<IP>");
     let d = HEX_RE.replace_all(&c, "<HEX>");
     let e = DUR_RE.replace_all(&d, "<DUR>");
-    let f = NUM_RE.replace_all(&e, "<NUM>");
-    f.into_owned()
+    let f = PID_RE.replace_all(&e, "[PID]");
+    let g = NUM_RE.replace_all(&f, "<NUM>");
+    g.into_owned()
 }
 
 pub fn parse_line(source: &str, line: &str) -> LogEvent {
@@ -368,6 +374,14 @@ mod tests {
         let out = normalize("127.0.0.1 - - [20/Feb/2026:15:03:24 +0000] \"GET /\"");
         assert!(out.contains("<TS>"), "got: {}", out);
         assert!(!out.contains("Feb"));
+    }
+
+    #[test]
+    fn normalize_bracketed_pid() {
+        let out = normalize("2026-02-20 15:03:24 UTC [12345] LOG:  checkpoint starting");
+        assert!(out.contains("[PID]"), "got: {}", out);
+        assert!(!out.contains("[12345]"));
+        assert!(!out.contains("[<NUM>]"));
     }
 
     #[test]
