@@ -61,7 +61,24 @@ pub struct LogEvent {
 }
 
 static ISO_TS: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?").unwrap()
+    Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2}| ?UTC)?")
+        .unwrap()
+});
+
+static SYSLOG_TS: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"(?:",
+        // "20 Feb 2026 15:03:24.123" (Redis, RFC 2822)
+        r"\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?",
+        r"|",
+        // "Feb 20 15:03:24.123" (classic syslog)
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?",
+        r"|",
+        // "20/Feb/2026:15:03:24" (Common Log Format / Apache)
+        r"\b\d{2}/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/\d{4}:\d{2}:\d{2}:\d{2}",
+        r")",
+    ))
+    .unwrap()
 });
 
 static UUID_RE: Lazy<Regex> = Lazy::new(|| {
@@ -104,7 +121,8 @@ pub fn detect_level(line: &str) -> Level {
 
 pub fn normalize(line: &str) -> String {
     let a = ISO_TS.replace_all(line, "<TS>");
-    let b = UUID_RE.replace_all(&a, "<UUID>");
+    let a2 = SYSLOG_TS.replace_all(&a, "<TS>");
+    let b = UUID_RE.replace_all(&a2, "<UUID>");
     let c = IP_RE.replace_all(&b, "<IP>");
     let d = HEX_RE.replace_all(&c, "<HEX>");
     let e = DUR_RE.replace_all(&d, "<DUR>");
@@ -231,6 +249,36 @@ mod tests {
         assert_eq!(ev.source, "test/src");
         assert!(ev.normalized.contains("<TS>"));
         assert!(ev.normalized.contains("<IP>"));
+    }
+
+    #[test]
+    fn normalize_syslog_timestamp() {
+        let out = normalize("Feb 20 15:03:24 myhost sshd[12345]: Accepted");
+        assert!(out.contains("<TS>"), "got: {}", out);
+        assert!(!out.contains("Feb"));
+        assert!(!out.contains("15:03"));
+    }
+
+    #[test]
+    fn normalize_redis_timestamp() {
+        let out = normalize("12345:M 20 Feb 2026 15:03:24.123 * Background saving");
+        assert!(out.contains("<TS>"), "got: {}", out);
+        assert!(!out.contains("Feb"));
+        assert!(!out.contains("15:03"));
+    }
+
+    #[test]
+    fn normalize_clf_timestamp() {
+        let out = normalize("127.0.0.1 - - [20/Feb/2026:15:03:24 +0000] \"GET /\"");
+        assert!(out.contains("<TS>"), "got: {}", out);
+        assert!(!out.contains("Feb"));
+    }
+
+    #[test]
+    fn normalize_iso_utc_suffix() {
+        let out = normalize("2026-02-20 15:03:24 UTC [123] LOG: checkpoint starting");
+        assert!(out.contains("<TS>"), "got: {}", out);
+        assert!(!out.contains("2026-02-20"));
     }
 
     #[test]
