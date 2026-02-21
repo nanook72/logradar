@@ -2,6 +2,8 @@
 
 A modern, colorful, high-performance log analysis TUI built in Rust. Streams logs from multiple sources, clusters repeated patterns automatically, and includes an integrated fuzzy finder.
 
+![Logradar](https://github.com/user-attachments/assets/e90ae3bf-e2b5-4e0a-8a0b-806fbf54fe62)
+
 ![Rust](https://img.shields.io/badge/Rust-stable-orange)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
