@@ -1,4 +1,6 @@
 use tokio::process::Command;
+
+use crate::util::sanitize;
 use tokio::sync::mpsc;
 
 #[allow(dead_code)]
@@ -19,9 +21,17 @@ pub struct AzureContainerApp {
     pub provisioning_state: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct KubePod {
+    pub namespace: String,
+    pub name: String,
+    pub phase: String,
+}
+
 #[derive(Debug)]
 pub enum DiscoveryResult {
     Docker(Result<Vec<DockerContainer>, String>),
+    Kube(Result<Vec<KubePod>, String>),
     Azure(Result<Vec<AzureContainerApp>, String>),
     AzureToken(Result<String, String>),
 }
@@ -42,7 +52,7 @@ async fn run_docker_discovery() -> Result<Vec<DockerContainer>, String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("docker ps failed: {}", stderr.trim()));
+        return Err(format!("docker ps failed: {}", sanitize(stderr.trim())));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -53,10 +63,10 @@ async fn run_docker_discovery() -> Result<Vec<DockerContainer>, String> {
             let parts: Vec<&str> = line.splitn(4, '\t').collect();
             if parts.len() >= 4 {
                 Some(DockerContainer {
-                    id: parts[0].to_string(),
-                    name: parts[1].to_string(),
-                    image: parts[2].to_string(),
-                    status: parts[3].to_string(),
+                    id: sanitize(parts[0]),
+                    name: sanitize(parts[1]),
+                    image: sanitize(parts[2]),
+                    status: sanitize(parts[3]),
                 })
             } else {
                 None
@@ -65,6 +75,59 @@ async fn run_docker_discovery() -> Result<Vec<DockerContainer>, String> {
         .collect();
 
     Ok(containers)
+}
+
+pub fn discover_kube(tx: mpsc::Sender<DiscoveryResult>) {
+    tokio::spawn(async move {
+        let result = run_kube_discovery().await;
+        let _ = tx.send(DiscoveryResult::Kube(result)).await;
+    });
+}
+
+async fn run_kube_discovery() -> Result<Vec<KubePod>, String> {
+    let output = Command::new("kubectl")
+        .args(["get", "pods", "--all-namespaces", "--output=json"])
+        .output()
+        .await
+        .map_err(|e| format!("kubectl not found: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("kubectl get pods failed: {}", sanitize(stderr.trim())));
+    }
+    parse_kube_pods(&output.stdout)
+}
+
+/// Parse `kubectl get pods -o json`. Running pods first, then by namespace/name.
+pub fn parse_kube_pods(json: &[u8]) -> Result<Vec<KubePod>, String> {
+    let v: serde_json::Value = serde_json::from_slice(json).map_err(|e| format!("Failed to parse JSON: {}", e))?;
+    let mut pods: Vec<KubePod> = v
+        .get("items")
+        .and_then(|i| i.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let meta = item.get("metadata")?;
+                    Some(KubePod {
+                        namespace: sanitize(meta.get("namespace")?.as_str()?),
+                        name: sanitize(meta.get("name")?.as_str()?),
+                        phase: item
+                            .pointer("/status/phase")
+                            .and_then(|p| p.as_str())
+                            .map(sanitize)
+                            .unwrap_or_else(|| "Unknown".into()),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    pods.sort_by(|a, b| {
+        (a.phase != "Running")
+            .cmp(&(b.phase != "Running"))
+            .then(a.namespace.cmp(&b.namespace))
+            .then(a.name.cmp(&b.name))
+    });
+    Ok(pods)
 }
 
 pub fn discover_azure(tx: mpsc::Sender<DiscoveryResult>) {
@@ -89,7 +152,7 @@ async fn run_azure_discovery() -> Result<Vec<AzureContainerApp>, String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("az containerapp list failed: {}", stderr.trim()));
+        return Err(format!("az containerapp list failed: {}", sanitize(stderr.trim())));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -101,12 +164,12 @@ async fn run_azure_discovery() -> Result<Vec<AzureContainerApp>, String> {
         .unwrap_or(&vec![])
         .iter()
         .filter_map(|item| {
-            let name = item.get("name")?.as_str()?.to_string();
+            let name = sanitize(item.get("name")?.as_str()?);
             let rg = item
                 .get("resourceGroup")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                .map(sanitize)
+                .unwrap_or_default();
             // Parse subscription ID from resource id:
             // /subscriptions/{sub}/resourceGroups/{rg}/providers/...
             let sub = item
@@ -115,15 +178,15 @@ async fn run_azure_discovery() -> Result<Vec<AzureContainerApp>, String> {
                 .and_then(|id| {
                     let parts: Vec<&str> = id.split('/').collect();
                     // /subscriptions/{sub}/...  → parts[2]
-                    parts.get(2).map(|s| s.to_string())
+                    parts.get(2).map(|s| sanitize(s))
                 })
                 .unwrap_or_default();
             let state = item
                 .get("properties")
                 .and_then(|p| p.get("provisioningState"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("Unknown")
-                .to_string();
+                .map(sanitize)
+                .unwrap_or_else(|| "Unknown".to_string());
             Some(AzureContainerApp {
                 name,
                 resource_group: rg,
@@ -155,7 +218,7 @@ async fn fetch_azure_token() -> Result<String, String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("az token failed: {}", stderr.trim()));
+        return Err(format!("az token failed: {}", sanitize(stderr.trim())));
     }
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout)
@@ -165,4 +228,23 @@ async fn fetch_azure_token() -> Result<String, String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| "no accessToken in response".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kube_pods_parse_and_sort() {
+        let json = br#"{"items":[
+            {"metadata":{"namespace":"prod","name":"api-2"},"status":{"phase":"Pending"}},
+            {"metadata":{"namespace":"prod","name":"api-1"},"status":{"phase":"Running"}},
+            {"metadata":{"namespace":"dev","name":"web\u001b]0;x\u0007"},"status":{"phase":"Running"}},
+            {"metadata":{"name":"no-namespace"}}
+        ]}"#;
+        let pods = parse_kube_pods(json).unwrap();
+        let names: Vec<String> = pods.iter().map(|p| format!("{}/{} {}", p.namespace, p.name, p.phase)).collect();
+        assert_eq!(names, ["dev/web Running", "prod/api-1 Running", "prod/api-2 Pending"]);
+        assert!(parse_kube_pods(b"not json").is_err());
+    }
 }

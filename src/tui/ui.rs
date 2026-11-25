@@ -2,11 +2,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Block, BorderType, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap},
     Frame,
 };
 
-use chrono::Local;
 
 use crate::app::{App, AppMode, Pane};
 use crate::ingest::SourceStatus;
@@ -27,7 +26,7 @@ fn header_height(app: &App, terminal_height: u16) -> u16 {
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let theme = app.theme().clone();
-    let h = header_height(app, f.size().height);
+    let h = header_height(app, f.area().height);
 
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -36,7 +35,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             Constraint::Min(3),     // body
             Constraint::Length(1),  // status bar
         ])
-        .split(f.size());
+        .split(f.area());
 
     let body_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -54,7 +53,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_patterns(f, body_chunks[1], app, &theme);
         render_details(f, body_chunks[2], app, &theme);
         render_status_bar(f, main_chunks[2], app, &theme);
-        let help_area = centered_rect(60, 80, f.size());
+        let help_area = centered_rect(60, 80, f.area());
         render_help(f, help_area, &theme);
         return;
     }
@@ -79,7 +78,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     render_status_bar(f, main_chunks[2], app, &theme);
 
     if app.mode == AppMode::SourceMenu {
-        let menu_area = centered_rect(60, 70, f.size());
+        let menu_area = centered_rect(60, 70, f.area());
         render_source_menu(f, menu_area, app, &theme);
     }
 }
@@ -211,7 +210,7 @@ fn render_sources(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                     _ => theme.text_dim,
                 };
                 // Show just the name part after the kind prefix
-                let display_name = src.id.split('/').nth(1).unwrap_or(&src.id);
+                let display_name = src.id.split_once('/').map_or(src.id.as_str(), |(_, rest)| rest);
                 ListItem::new(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(format!("{} ", marker), Style::default().fg(marker_color)),
@@ -233,8 +232,10 @@ fn provider_label(kind: &str) -> &str {
     match kind {
         "docker" => "Docker",
         "azure" => "Azure",
+        "kube" => "Kubernetes",
         "command" => "Command",
         "file" => "File",
+        "stdin" => "Stdin",
         _ => kind,
     }
 }
@@ -246,7 +247,7 @@ fn render_patterns(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .active_source_filter
         .as_ref()
         .map(|s| {
-            let short = s.split('/').nth(1).unwrap_or(s);
+            let short = s.split_once('/').map_or(s.as_str(), |(_, rest)| rest);
             format!(" [{}]", short)
         })
         .unwrap_or_default();
@@ -262,6 +263,15 @@ fn render_patterns(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     } else {
         format!("Patterns{} ({})", source_tag, app.filtered_view.len())
     };
+    // Sort order and level filter when they differ from the defaults.
+    let mut view = Vec::new();
+    if app.sort != crate::app::SortMode::Rate {
+        view.push(format!("by {}", app.sort.label()));
+    }
+    if app.level_filter.is_some() {
+        view.push(app.level_filter_label());
+    }
+    let title = if view.is_empty() { title } else { format!("{} · {}", title, view.join(" · ")) };
     let block = pane_block(&title, focused, theme);
     let inner = block.inner(area);
 
@@ -361,15 +371,18 @@ fn render_patterns(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             )));
 
             // Trend arrow with color coding
+            let is_new = p.first_seen.elapsed() < crate::app::NEW_FOR;
             let (trend_str, trend_color) = if p.spike {
                 ("↑↑".to_string(), theme.count_hot)
+            } else if is_new {
+                ("NEW".to_string(), theme.accent)
             } else {
                 (p.trend.symbol().to_string(), theme.trend_color(p.trend))
             };
             let trend_cell = Cell::from(Line::from(Span::styled(
                 trend_str,
                 Style::default().fg(trend_color).add_modifier(
-                    if p.spike { Modifier::BOLD } else { Modifier::empty() },
+                    if p.spike || is_new { Modifier::BOLD } else { Modifier::empty() },
                 ),
             )));
 
@@ -420,7 +433,7 @@ fn render_patterns(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let table = Table::new(rows, widths)
         .header(header)
         .block(block)
-        .highlight_style(highlight_style)
+        .row_highlight_style(highlight_style)
         .highlight_symbol("▸ ");
 
     let mut state = TableState::default();
@@ -488,7 +501,7 @@ fn render_details(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             let src_list: Vec<&String> = pattern.sources.iter().collect();
             let src_str = src_list
                 .iter()
-                .map(|s| s.split('/').nth(1).unwrap_or(s))
+                .map(|s| s.split_once('/').map_or(s.as_str(), |(_, rest)| rest))
                 .collect::<Vec<_>>()
                 .join(", ");
             lines.push(Line::from(vec![
@@ -558,63 +571,99 @@ fn render_details(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     }
 }
 
+/// Local wall-clock time of a line, with milliseconds.
+fn clock_of(t: std::time::SystemTime) -> String {
+    jiff::Timestamp::try_from(t)
+        .map(|ts| ts.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime("%H:%M:%S%.3f").to_string())
+        .unwrap_or_default()
+}
+
 fn render_drilldown(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let block = pane_block("Drilldown - Samples", true, theme);
+    let lines = app.drill_lines();
+    let selected = app.drill_index(lines.len());
+    let title = match app.selected_pattern_data() {
+        Some(_) => format!(
+            "Drilldown · {} recent lines · {}",
+            lines.len(),
+            if app.drill_follow { "following (j/k to browse)" } else { "paused (G to follow)" }
+        ),
+        None => "Drilldown".to_string(),
+    };
+    let block = pane_block(&title, true, theme);
 
-    if let Some(pattern) = app.selected_pattern_data() {
-        let items: Vec<ListItem> = pattern
-            .samples
-            .iter()
-            .enumerate()
-            .map(|(i, sample)| {
-                let display = if app.show_normalized {
-                    pattern.canonical.clone()
-                } else {
-                    sample.clone()
-                };
-                let style = if i == app.detail_scroll {
-                    Style::default()
-                        .fg(theme.selected_fg)
-                        .bg(theme.selected_bg)
-                } else {
-                    Style::default().fg(theme.text)
-                };
-                ListItem::new(Line::from(Span::styled(display, style)))
-            })
-            .collect();
-
-        let list = List::new(items).block(block);
-        f.render_widget(list, area);
-    } else {
+    let Some(pattern) = app.selected_pattern_data() else {
         let p = Paragraph::new("No pattern selected")
             .block(block)
             .style(Style::default().fg(theme.text_dim));
         f.render_widget(p, area);
+        return;
+    };
+    if lines.is_empty() {
+        let p = Paragraph::new("No recent lines for this pattern (older lines have rolled off)")
+            .block(block)
+            .style(Style::default().fg(theme.text_dim));
+        f.render_widget(p, area);
+        return;
     }
+
+    let items: Vec<ListItem> = lines
+        .iter()
+        .map(|l| {
+            let text = if app.show_normalized { pattern.canonical.as_str() } else { l.raw.as_str() };
+            ListItem::new(Line::from(vec![
+                Span::styled(clock_of(l.at), Style::default().fg(theme.text_dim)),
+                Span::raw(" "),
+                Span::styled(text.to_string(), Style::default().fg(theme.text)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().fg(theme.selected_fg).bg(theme.selected_bg));
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_drilldown_detail(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let block = pane_block("Sample Detail", false, theme);
+    let block = pane_block("Line & context (same source)", false, theme);
+    let lines = app.drill_lines();
+    let Some(line) = lines.get(app.drill_index(lines.len())) else {
+        let p = Paragraph::new("No line selected")
+            .block(block)
+            .style(Style::default().fg(theme.text_dim));
+        f.render_widget(p, area);
+        return;
+    };
 
-    if let Some(pattern) = app.selected_pattern_data() {
-        if let Some(sample) = pattern.samples.get(app.detail_scroll) {
-            let display = if app.show_normalized {
-                pattern.canonical.clone()
-            } else {
-                sample.clone()
-            };
-            let paragraph = Paragraph::new(display)
-                .block(block)
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(theme.text));
-            f.render_widget(paragraph, area);
-            return;
-        }
+    let label = Style::default().fg(theme.text_dim);
+    let mut text = vec![
+        Line::from(vec![
+            Span::styled(clock_of(line.at), label),
+            Span::raw("  "),
+            Span::styled(format!("[{}]", line.level.short()), Style::default().fg(theme.level_color(line.level))),
+            Span::raw("  "),
+            Span::styled(line.source.clone(), label),
+        ]),
+        Line::from(Span::styled(line.raw.clone(), Style::default().fg(theme.text).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        Line::from(Span::styled("CONTEXT", label)),
+    ];
+    for c in app.store.context(line.seq, 5) {
+        let style = if c.seq == line.seq {
+            Style::default().fg(theme.selected_fg).bg(theme.selected_bg)
+        } else {
+            Style::default().fg(theme.level_color(c.level))
+        };
+        text.push(Line::from(vec![
+            Span::styled(clock_of(c.at), label),
+            Span::raw(" "),
+            Span::styled(c.raw.clone(), style),
+        ]));
     }
-
-    let p = Paragraph::new("No sample")
-        .block(block)
-        .style(Style::default().fg(theme.text_dim));
+    text.push(Line::from(""));
+    text.push(Line::from(Span::styled("y copy · Esc back", label)));
+    let p = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
     f.render_widget(p, area);
 }
 
@@ -656,7 +705,7 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         theme.text_dim
     };
 
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             " logradar ",
             Style::default()
@@ -665,11 +714,19 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(
-                "│ {} patterns │ {} events │ ",
-                app.store.len(),
-                app.log_count,
-            ),
+            {
+                // Note when the pattern cap is dropping stale patterns.
+                let evicted = match app.store.evicted() {
+                    0 => String::new(),
+                    n => format!(" ({} dropped)", n),
+                };
+                format!(
+                    "│ {} patterns{} │ {} events │ ",
+                    app.store.len(),
+                    evicted,
+                    app.log_count,
+                )
+            },
             style,
         ),
         Span::styled(
@@ -696,16 +753,51 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 .bg(theme.status_bar_bg)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("│ ", style),
-        Span::styled("?", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
-        Span::styled("=help ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
-        Span::styled("a", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
-        Span::styled("=add ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
-        Span::styled("/", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
-        Span::styled("=search ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
-        Span::styled("q", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
-        Span::styled("=quit ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
-    ]);
+    ];
+
+    // A recent alert takes the place of the key hints for 30 seconds.
+    let flash = app
+        .flash
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() < std::time::Duration::from_secs(6));
+    let alert = app
+        .last_alert
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() < std::time::Duration::from_secs(30));
+    match (flash, alert) {
+        (Some((fat, msg)), a) if a.is_none_or(|(aat, _)| fat >= aat) => {
+            spans.push(Span::styled("│ ", style));
+            spans.push(Span::styled(
+                format!("{} ", msg),
+                Style::default()
+                    .fg(theme.accent)
+                    .bg(theme.status_bar_bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        (_, Some((_, text))) => {
+            spans.push(Span::styled("│ ", style));
+            spans.push(Span::styled(
+                format!("⚑ {} ", text),
+                Style::default()
+                    .fg(theme.warn)
+                    .bg(theme.status_bar_bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        _ => spans.extend([
+            Span::styled("│ ", style),
+            Span::styled("?", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
+            Span::styled("=help ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
+            Span::styled("a", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
+            Span::styled("=add ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
+            Span::styled("/", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
+            Span::styled("=search ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
+            Span::styled("q", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
+            Span::styled("=quit ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
+        ]),
+    }
+    let line = Line::from(spans);
 
     let bar = Paragraph::new(line).style(style);
     f.render_widget(bar, area);
@@ -825,6 +917,89 @@ fn render_source_menu(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                         Span::styled(c.name.clone(), style),
                         Span::styled(
                             format!("  {}", c.image),
+                            Style::default().fg(theme.text_dim),
+                        ),
+                    ]))
+                })
+                .collect();
+
+            let list = List::new(items).block(block);
+            f.render_widget(list, area);
+        }
+        SourceMenuScreen::KubeDiscovery => {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(theme.modal_border))
+                .style(Style::default().bg(theme.modal_bg))
+                .title(Span::styled(
+                    " Kubernetes Pods (Space=select, Enter=add, r=refresh) ",
+                    Style::default()
+                        .fg(theme.modal_title)
+                        .add_modifier(Modifier::BOLD),
+                ));
+
+            if menu.kube_loading {
+                let p = Paragraph::new(Span::styled(
+                    "Discovering pods (kubectl get pods)...",
+                    Style::default().fg(theme.text_dim),
+                ))
+                .block(block);
+                f.render_widget(p, area);
+                return;
+            }
+
+            if let Some(ref err) = menu.kube_error {
+                let p = Paragraph::new(Span::styled(
+                    err.clone(),
+                    Style::default().fg(theme.error),
+                ))
+                .block(block);
+                f.render_widget(p, area);
+                return;
+            }
+
+            if menu.kube_pods.is_empty() {
+                let p = Paragraph::new(Span::styled(
+                    "No pods found in the current kubectl context",
+                    Style::default().fg(theme.text_dim),
+                ))
+                .block(block);
+                f.render_widget(p, area);
+                return;
+            }
+
+            let items: Vec<ListItem> = menu
+                .kube_pods
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let checkbox = if menu.selected.contains(&i) {
+                        "[x] "
+                    } else {
+                        "[ ] "
+                    };
+                    let cursor = if i == menu.discovery_cursor {
+                        "▸ "
+                    } else {
+                        "  "
+                    };
+                    let style = if i == menu.discovery_cursor {
+                        Style::default()
+                            .fg(theme.selected_fg)
+                            .bg(theme.selected_bg)
+                    } else {
+                        Style::default().fg(theme.text)
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(cursor, Style::default().fg(theme.accent)),
+                        Span::styled(
+                            checkbox.to_string(),
+                            Style::default().fg(theme.success),
+                        ),
+                        Span::styled(format!("{}/{}", c.namespace, c.name), style),
+                        Span::styled(
+                            format!("  {}", c.phase),
                             Style::default().fg(theme.text_dim),
                         ),
                     ]))
@@ -1077,7 +1252,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn render_header_minimal(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let clock = Local::now().format("%H:%M:%S").to_string();
+    let clock = jiff::ZonedDateTime::now().strftime("%H:%M:%S").to_string();
     let total_rate: f64 = app.source_rates.values().map(|ts| ts.len() as f64).sum();
 
     let left = format!(
@@ -1130,7 +1305,7 @@ fn render_header_minimal(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn render_header_stats(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let clock = Local::now().format("%H:%M:%S").to_string();
+    let clock = jiff::ZonedDateTime::now().strftime("%H:%M:%S").to_string();
     let total_rate: f64 = app.source_rates.values().map(|ts| ts.len() as f64).sum();
 
     let left = format!(
@@ -1229,7 +1404,11 @@ fn render_help(f: &mut Frame, area: Rect, theme: &Theme) {
         help_line("Esc", "Clear filter / exit overlay", theme),
         help_line("a", "Add source (interactive)", theme),
         help_line("n", "Toggle normalized / raw", theme),
-        help_line("t", "Toggle color / mono theme", theme),
+        help_line("s", "Sort: rate / count / level / newest", theme),
+        help_line("L", "Level filter: all / warn+ / errors", theme),
+        help_line("x / X", "Export view to Markdown / JSON", theme),
+        help_line("y", "Drilldown: copy line (j/k g/G PgUp/PgDn)", theme),
+        help_line("t", "Cycle theme", theme),
         help_line("p", "Pause / resume ingest", theme),
         help_line("r", "Reset all patterns", theme),
         help_line("c", "Clear counters", theme),

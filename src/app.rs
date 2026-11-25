@@ -23,6 +23,38 @@ pub enum AppMode {
     SourceMenu,
 }
 
+/// Order of the pattern list (when not searching).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortMode {
+    Rate,
+    Count,
+    Level,
+    Newest,
+}
+
+impl SortMode {
+    pub fn next(self) -> Self {
+        match self {
+            SortMode::Rate => SortMode::Count,
+            SortMode::Count => SortMode::Level,
+            SortMode::Level => SortMode::Newest,
+            SortMode::Newest => SortMode::Rate,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SortMode::Rate => "rate",
+            SortMode::Count => "count",
+            SortMode::Level => "level",
+            SortMode::Newest => "newest",
+        }
+    }
+}
+
+/// How long a pattern counts as NEW after it first appears.
+pub const NEW_FOR: std::time::Duration = std::time::Duration::from_secs(60);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Sources,
@@ -64,6 +96,16 @@ pub struct App {
     pub collapsed_groups: HashSet<String>,
     // Cached Azure management access token (pre-fetched during discovery)
     pub azure_token: Option<String>,
+    /// Most recent alert, shown in the status bar.
+    pub last_alert: Option<(std::time::Instant, String)>,
+    pub alerts_fired: u64,
+    pub sort: SortMode,
+    /// Show only patterns at this level or above (None = all).
+    pub level_filter: Option<parse::Level>,
+    /// Short-lived message in the status bar (export path, copy result…).
+    pub flash: Option<(Instant, String)>,
+    /// Drill-down keeps the newest line selected until the user moves.
+    pub drill_follow: bool,
     // Whether to show the ASCII banner header
     pub show_banner: bool,
 }
@@ -106,6 +148,12 @@ impl App {
             source_rates: HashMap::new(),
             collapsed_groups: HashSet::new(),
             azure_token: None,
+            last_alert: None,
+            alerts_fired: 0,
+            sort: SortMode::Rate,
+            level_filter: None,
+            flash: None,
+            drill_follow: true,
             show_banner: true,
         }
     }
@@ -153,6 +201,14 @@ impl App {
     fn update_source_status(&mut self, source_id: &str, status: SourceStatus) {
         if let Some(src) = self.sources.iter_mut().find(|s| s.id == source_id) {
             src.status = status;
+        }
+    }
+
+    /// Stop every source (aborting a task drops its child process, which
+    /// `kill_on_drop` kills).
+    pub fn stop_all_sources(&mut self) {
+        for (_, handle) in self.handles.drain() {
+            handle.abort();
         }
     }
 
@@ -204,7 +260,7 @@ impl App {
 
     /// Provider ordering for the Sources pane.
     pub fn provider_order() -> &'static [&'static str] {
-        &["docker", "azure", "command", "file"]
+        &["docker", "kube", "azure", "command", "file", "stdin"]
     }
 
     /// Build the visible rows in the sources pane: headers + items.
@@ -233,8 +289,21 @@ impl App {
         rows
     }
 
+    /// Pattern indices in the current sort order.
+    fn sorted_indices(&self) -> Vec<usize> {
+        let ps = self.store.patterns();
+        let mut idx = self.store.sorted_indices(); // rate, then most recent
+        match self.sort {
+            SortMode::Rate => {}
+            SortMode::Count => idx.sort_by(|&a, &b| ps[b].count_total.cmp(&ps[a].count_total)),
+            SortMode::Level => idx.sort_by(|&a, &b| ps[b].level.severity().cmp(&ps[a].level.severity())),
+            SortMode::Newest => idx.sort_by(|&a, &b| ps[b].first_seen.cmp(&ps[a].first_seen)),
+        }
+        idx
+    }
+
     pub fn update_filtered_view(&mut self) {
-        let sorted = self.store.sorted_indices();
+        let sorted = self.sorted_indices();
         let mut results = if !self.search_query.is_empty() {
             search::fuzzy_search(&self.search_query, self.store.patterns(), &sorted)
         } else {
@@ -252,6 +321,10 @@ impl App {
         if let Some(ref source_id) = self.active_source_filter {
             let patterns = self.store.patterns();
             results.retain(|sr| patterns[sr.index].sources.contains(source_id));
+        }
+        if let Some(min) = self.level_filter {
+            let patterns = self.store.patterns();
+            results.retain(|sr| patterns[sr.index].level.severity() >= min.severity());
         }
 
         self.filtered_view = results;
@@ -351,6 +424,78 @@ impl App {
             .map(|sr| &self.store.patterns()[sr.index])
     }
 
+    pub fn cycle_sort(&mut self) {
+        self.sort = self.sort.next();
+        self.selected_pattern = 0;
+        self.say(format!("Sorted by {}", self.sort.label()));
+    }
+
+    pub fn cycle_level_filter(&mut self) {
+        use parse::Level;
+        self.level_filter = match self.level_filter {
+            None => Some(Level::Warn),
+            Some(Level::Warn) => Some(Level::Error),
+            _ => None,
+        };
+        self.selected_pattern = 0;
+        self.say(format!("Showing {}", self.level_filter_label()));
+    }
+
+    pub fn level_filter_label(&self) -> String {
+        match self.level_filter {
+            None => "all levels".into(),
+            Some(parse::Level::Error) => "errors only".into(),
+            Some(l) => format!("{} and above", l.as_str().to_lowercase()),
+        }
+    }
+
+    /// Show a short message in the status bar.
+    pub fn say(&mut self, msg: impl Into<String>) {
+        self.flash = Some((Instant::now(), msg.into()));
+    }
+
+    /// Write the patterns currently shown to a Markdown or JSON file.
+    pub fn export(&mut self, ext: &str) {
+        let patterns: Vec<&crate::pattern::Pattern> = self
+            .filtered_view
+            .iter()
+            .map(|sr| &self.store.patterns()[sr.index])
+            .collect();
+        let meta = crate::export::Meta {
+            sources: self.sources.iter().map(|s| s.id.clone()).collect(),
+            events: self.log_count,
+            sort: self.sort.label().into(),
+            filter: self.level_filter_label(),
+        };
+        let content = if ext == "json" {
+            crate::export::json(&patterns, &meta)
+        } else {
+            crate::export::markdown(&patterns, &meta)
+        };
+        let msg = match crate::export::write_new(&content, ext) {
+            Ok(path) => format!("Exported {} patterns to {}", patterns.len(), path.display()),
+            Err(e) => format!("Export failed: {:#}", e),
+        };
+        self.say(msg);
+    }
+
+    /// Recent lines of the selected pattern, oldest first.
+    pub fn drill_lines(&self) -> Vec<&crate::pattern::RecentLine> {
+        match self.selected_pattern_data() {
+            Some(p) => self.store.recent_lines(p.id),
+            None => Vec::new(),
+        }
+    }
+
+    /// The drill-down row in view: the newest while following.
+    pub fn drill_index(&self, len: usize) -> usize {
+        if self.drill_follow || self.detail_scroll >= len {
+            len.saturating_sub(1)
+        } else {
+            self.detail_scroll
+        }
+    }
+
     pub fn enter_search(&mut self) {
         self.mode = AppMode::Search;
         self.search_query.clear();
@@ -384,7 +529,16 @@ impl App {
 
     pub fn add_docker_source(&mut self, container: String) {
         if let Some(tx) = self.tx.clone() {
-            let (info, handle) = ingest::spawn_docker(container, tx);
+            let (info, handle) = ingest::spawn_docker(container, ingest::Follow::Yes, tx);
+            let id = info.id.clone();
+            self.sources.push(info);
+            self.handles.insert(id, handle);
+        }
+    }
+
+    pub fn add_kube_source(&mut self, target: ingest::KubeTarget) {
+        if let Some(tx) = self.tx.clone() {
+            let (info, handle) = ingest::spawn_kube(target, ingest::Follow::Yes, tx);
             let id = info.id.clone();
             self.sources.push(info);
             self.handles.insert(id, handle);
@@ -393,7 +547,7 @@ impl App {
 
     pub fn add_file_source(&mut self, path: String) {
         if let Some(tx) = self.tx.clone() {
-            let (info, handle) = ingest::spawn_file(path, tx);
+            let (info, handle) = ingest::spawn_file(path, ingest::Follow::Yes, tx);
             let id = info.id.clone();
             self.sources.push(info);
             self.handles.insert(id, handle);
@@ -437,11 +591,13 @@ impl App {
     pub fn open_source_menu(&mut self) {
         self.source_menu.reset();
         self.source_menu.docker_loading = true;
+        self.source_menu.kube_loading = true;
         self.source_menu.azure_loading = true;
         self.mode = AppMode::SourceMenu;
-        // Pre-fetch both Docker and Azure discovery in parallel
+        // Pre-fetch Docker, Kubernetes and Azure discovery in parallel
         if let Some(dtx) = self.discovery_tx.clone() {
             crate::discovery::discover_docker(dtx.clone());
+            crate::discovery::discover_kube(dtx.clone());
             crate::discovery::discover_azure(dtx);
         }
     }
@@ -456,6 +612,15 @@ impl App {
             DiscoveryResult::Docker(Err(e)) => {
                 self.source_menu.docker_loading = false;
                 self.source_menu.docker_error = Some(e);
+            }
+            DiscoveryResult::Kube(Ok(pods)) => {
+                self.source_menu.kube_pods = pods;
+                self.source_menu.kube_loading = false;
+                self.source_menu.kube_error = None;
+            }
+            DiscoveryResult::Kube(Err(e)) => {
+                self.source_menu.kube_loading = false;
+                self.source_menu.kube_error = Some(e);
             }
             DiscoveryResult::Azure(Ok(apps)) => {
                 self.source_menu.azure_apps = apps;
@@ -480,6 +645,20 @@ impl App {
         for idx in selected {
             if let Some(c) = self.source_menu.docker_containers.get(idx) {
                 self.add_docker_source(c.name.clone());
+            }
+        }
+    }
+
+    pub fn spawn_selected_kube_sources(&mut self) {
+        let selected: Vec<usize> = self.source_menu.selected.iter().copied().collect();
+        for idx in selected {
+            let target = self
+                .source_menu
+                .kube_pods
+                .get(idx)
+                .and_then(|p| ingest::KubeTarget::parse(&format!("{}:{}", p.namespace, p.name)).ok());
+            if let Some(t) = target {
+                self.add_kube_source(t);
             }
         }
     }

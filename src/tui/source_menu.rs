@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 
-use crate::discovery::{AzureContainerApp, DockerContainer};
+use crate::discovery::{AzureContainerApp, DockerContainer, KubePod};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceMenuScreen {
     MainMenu,
     DockerDiscovery,
+    KubeDiscovery,
     AzureDiscovery,
     FileInput,
     CommandInput,
@@ -13,6 +14,7 @@ pub enum SourceMenuScreen {
 
 pub const MAIN_MENU_ITEMS: &[&str] = &[
     "Docker Container",
+    "Kubernetes Pod",
     "File (tail)",
     "Azure Container App",
     "Custom Command",
@@ -25,8 +27,11 @@ pub struct SourceMenuState {
     pub selected: HashSet<usize>,
     pub text_input: String,
     pub docker_containers: Vec<DockerContainer>,
+    pub kube_pods: Vec<KubePod>,
     pub azure_apps: Vec<AzureContainerApp>,
     pub docker_loading: bool,
+    pub kube_loading: bool,
+    pub kube_error: Option<String>,
     pub azure_loading: bool,
     pub docker_error: Option<String>,
     pub azure_error: Option<String>,
@@ -41,8 +46,11 @@ impl SourceMenuState {
             selected: HashSet::new(),
             text_input: String::new(),
             docker_containers: Vec::new(),
+            kube_pods: Vec::new(),
             azure_apps: Vec::new(),
             docker_loading: false,
+            kube_loading: false,
+            kube_error: None,
             azure_loading: false,
             docker_error: None,
             azure_error: None,
@@ -56,8 +64,11 @@ impl SourceMenuState {
         self.selected.clear();
         self.text_input.clear();
         self.docker_containers.clear();
+        self.kube_pods.clear();
         self.azure_apps.clear();
         self.docker_loading = false;
+        self.kube_loading = false;
+        self.kube_error = None;
         self.azure_loading = false;
         self.docker_error = None;
         self.azure_error = None;
@@ -66,6 +77,7 @@ impl SourceMenuState {
     pub fn discovery_item_count(&self) -> usize {
         match self.screen {
             SourceMenuScreen::DockerDiscovery => self.docker_containers.len(),
+            SourceMenuScreen::KubeDiscovery => self.kube_pods.len(),
             SourceMenuScreen::AzureDiscovery => self.azure_apps.len(),
             _ => 0,
         }

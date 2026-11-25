@@ -9,16 +9,21 @@ A modern, colorful, high-performance log analysis TUI built in Rust. Streams log
 
 ## Features
 
-- **Multi-source streaming** — Docker containers, Azure Container Apps, shell commands, file tailing
+- **Multi-source streaming** — Docker containers, Kubernetes pods/deployments/label selectors, Azure Container Apps, shell commands, file tailing, and anything piped in (`--file -`)
+- **Headless modes** — `logradar summary` prints the top patterns (table or JSON, with `--fail-on` for CI); `logradar watch` follows logs without the TUI and prints new patterns and alerts
 - **Interactive source menu** — Press `a` to discover and add sources at runtime
-- **Automatic pattern clustering** — Groups log lines by normalized signature (ANSI-stripped)
+- **Template clustering (Drain)** — Lines that differ only in a few words share a template: `user alice logged in` + `user bob logged in` → `user <*> logged in`. Typically cuts the pattern count 5-10× on real logs. Use `--exact` to group only identical lines; keeps up to 5,000 patterns, dropping the least recently seen
+- **Structured logs** — JSON (pino, bunyan, zap, Serilog, ECS…) and logfmt lines are clustered on their message field, with the level read from `level`/`severity`
 - **Activity sparklines** — Per-pattern 2-minute history (24 buckets x 5s) using Unicode block characters
 - **Rolling metrics** — 1-minute and 5-minute rate windows with color-coded trend indicators
-- **Spike detection** — Flags patterns with anomalous rate increases (sparkline turns accent on spike)
+- **Alerts** — Run a command or call a webhook (Slack, Discord, Teams…) when a pattern first appears, spikes, or crosses a rate
+- **Spike detection** — Flags patterns whose 1-minute rate is over 3× their 5-minute average (sparkline turns accent on spike)
 - **Live source status** — Per-source status icons: `●` running, `◐` starting (animated), `✖` error, `○` stopped
+- **Drill-down** — Enter on a pattern lists its recent lines with millisecond timestamps; each line shows the lines around it from the same source. `y` copies a line to the clipboard (via the terminal, OSC 52)
+- **Sort, filter, export** — Sort by rate / count / level / newest (`s`), show only warnings or errors (`L`), export the current view to a Markdown report or JSON (`x` / `X`). Patterns first seen in the last minute are marked NEW
 - **Fuzzy search** — Live pattern filtering with matched-character highlighting
 - **ASCII banner** — Matrix-inspired wordmark header with responsive layout (disable with `--no-banner`)
-- **Theme system** — Dracula, Matrix, and Mono themes; cycle with `t`
+- **Theme system** — nine themes (matrix, nebula, frostbyte, ember, deepwave, signal, obsidian, notredame, mono); cycle with `t` or pick with `--theme`
 - **Switchable profiles** — default, ops, network (live switching with `P`)
 - **Config file** — Custom profiles via `logradar.toml` or `~/.config/logradar/config.toml`
 - **3-pane layout** — Sources (grouped by provider), Patterns (with sparklines), Details
@@ -48,6 +53,11 @@ logradar tui --cmd "kubectl logs -f deploy/api"
 # Tail a log file
 logradar tui --file /var/log/syslog
 
+# Kubernetes: a pod, kind/name, or a label selector, optionally namespace-prefixed
+logradar tui --kube api-7c9f-x2k4
+logradar tui --kube prod:deploy/api
+logradar tui --kube 'prod:app=api,tier!=db'
+
 # Multiple sources at once
 logradar tui --docker web --docker db --file /var/log/app.log
 
@@ -59,7 +69,27 @@ logradar tui --config ./my-config.toml --cmd "my-app"
 
 # Launch with a specific theme
 logradar tui --theme ember --docker my-container
+
+# Pipe anything in
+kubectl logs -f deploy/api | logradar tui --file -
 ```
+
+### Without the TUI
+
+```bash
+# Top patterns in a log, as a table or JSON
+logradar summary --file app.log
+logradar summary --file app.log --json --top 50
+
+# In CI: fail the job if the test run logged any errors
+cargo test 2>&1 | logradar summary --file - --fail-on error
+
+# Follow logs and print each new pattern once, plus any alerts from the config
+logradar watch --docker api --level warn
+logradar watch --file /var/log/app.log --json | jq .
+```
+
+`summary` exits 0 on success, 1 when `--fail-on` matched, 2 on errors (bad arguments, unreadable source). `watch` ends when its sources end (e.g. the pipe closes) or on Ctrl-C.
 
 ## Keybindings
 
@@ -73,7 +103,12 @@ logradar tui --theme ember --docker my-container
 | `Esc`            | Exit search / help / picker  |
 | `a`              | Add source (interactive menu)|
 | `n`              | Toggle normalized / raw      |
-| `t`              | Cycle theme (color/matrix/mono)|
+| `s`              | Sort: rate / count / level / newest |
+| `L`              | Level filter: all / warn+ / errors |
+| `x` / `X`        | Export current view to Markdown / JSON |
+| `y`              | (Drilldown) copy line to clipboard |
+| `g` / `G`        | (Drilldown) oldest / newest, follow |
+| `t`              | Cycle theme                  |
 | `p`              | Pause / resume ingest        |
 | `P`              | Profile picker               |
 | `r`              | Reset all patterns           |
@@ -103,6 +138,45 @@ highlights = ["panic", "timeout", "oom"]
 ```
 
 Custom profiles are added alongside the built-ins. To override a built-in, use its name (e.g., `[profiles.default]`).
+
+### Clustering
+
+```toml
+[clustering]
+mode = "drain"      # or "exact": group only identical lines (same as --exact)
+similarity = 0.6    # share of words that must match to join a template (0.0-1.0)
+```
+
+Raise `similarity` if unrelated lines are merged; lower it to merge more aggressively. Lines at different levels are never merged.
+
+### Alerts
+
+```toml
+# A new kind of error appeared: desktop notification
+[[alerts]]
+name = "new error"
+when = "first_seen"          # first_seen | spike | rate
+level = "error"              # optional: lowest level that counts
+command = ["notify-send", "logradar: {name}", "{sample}"]
+
+# Timeouts above 20/min from any Docker source: post to Slack
+[[alerts]]
+name = "db timeouts"
+when = "rate"
+rate_per_min = 20
+match = "*timeout*"          # optional: glob over the pattern
+source = "docker/*"          # optional: glob over the source
+cooldown = "10m"             # per pattern; default 5m
+webhook = "https://hooks.slack.com/services/..."
+
+[alert_settings]
+max_per_minute = 10          # across all rules; extra alerts are dropped
+startup_grace = "10s"        # patterns seen this early (e.g. file history) aren't "new"
+```
+
+Placeholders for `command`: `{name}` `{pattern}` `{level}` `{count}` `{rate}` `{source}` `{sample}` `{summary}`.
+
+Log text is untrusted, so `command` is an argument list that is never run through a shell, and each placeholder fills exactly one argument. Don't wrap `{sample}` into a `sh -c` script string yourself; pass it as a separate argument (`["sh", "-c", 'echo "$1"', "sh", "{sample}"]`). Webhooks receive a JSON body (`text`, `alert`, `pattern`, `level`, `count`, `rate_per_min`, `source`, `sample`); the URL and body are handed to curl on stdin, so a secret webhook URL never shows up in `ps`.
 
 ## Azure Container Apps Setup
 
@@ -210,6 +284,7 @@ Select via `--theme <name>` or cycle at runtime with `t`:
 | `deepwave`  | Ocean analytics — teal, aqua, deep navy |
 | `signal`    | Minimalist professional — clean grays, subtle blue accent |
 | `obsidian`  | Ultra minimal — grayscale with strategic green accents |
+| `notredame` | Fighting Irish — navy, metallic gold, shamrock green |
 | `mono`      | Pure grayscale — no color, maximum readability |
 
 ## License

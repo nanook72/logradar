@@ -3,12 +3,16 @@ use regex::Regex;
 
 /// Regex matching ANSI escape sequences (CSI sequences, OSC, simple escapes).
 static ANSI_RE: Lazy<Regex> = Lazy::new(|| {
-    // Matches:
-    //   \x1b\[...m   (SGR / CSI sequences)
-    //   \x1b\[...    (other CSI)
-    //   \x1b]...ST   (OSC terminated by BEL or ST)
-    //   \x1b[^[]     (two-char escape like \x1b=)
-    Regex::new(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[^\x5b\x5d]").unwrap()
+    Regex::new(concat!(
+        // CSI: ESC [ or 8-bit CSI, parameter bytes, intermediates, final byte
+        r"(?:\x1b\[|\x{9b})[0-?]*[ -/]*[@-~]",
+        // OSC / DCS / SOS / PM / APC strings, terminated by BEL or ST, or
+        // unterminated through the end of the line
+        r"|(?:\x1b[\]PX^_]|[\x{9d}\x{90}\x{98}\x{9e}\x{9f}])[^\x07\x1b\x{9c}]*(?:\x07|\x1b\\|\x{9c})?",
+        // any other two-byte escape
+        r"|\x1b[^\[\]PX^_]?",
+    ))
+    .unwrap()
 });
 
 /// Regex matching JSON-encoded ANSI escapes: literal text \u001b[...m or \u001B[...m
@@ -16,6 +20,48 @@ static ANSI_RE: Lazy<Regex> = Lazy::new(|| {
 static JSON_ANSI_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\\u001[bB]\[[0-9;]*[A-Za-z]").unwrap()
 });
+
+/// Make untrusted text safe to draw in the terminal: strip ANSI escape
+/// sequences, turn tabs into spaces, and drop every other control character
+/// (C0, DEL, C1) plus bidi overrides that could reorder what is shown.
+/// Log content is attacker-influenced, so everything shown from a source goes
+/// through this.
+pub fn sanitize(s: &str) -> String {
+    strip_ansi(s)
+        .chars()
+        .filter_map(|c| match c {
+            '\t' => Some(' '),
+            c if c.is_control() => None,
+            c if is_invisible_format(c) => None,
+            c => Some(c),
+        })
+        .collect()
+}
+
+/// Unicode format (Cf) characters, line/paragraph separators and other
+/// invisible characters: bidi overrides and marks that reorder text, zero-width
+/// characters and tags that hide text from the operator.
+fn is_invisible_format(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{034F}' | '\u{0600}'..='\u{0605}' | '\u{061C}' | '\u{06DD}' | '\u{070F}'
+        | '\u{0890}'..='\u{0891}' | '\u{08E2}' | '\u{115F}'..='\u{1160}' | '\u{17B4}'..='\u{17B5}'
+        | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}' | '\u{3164}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}'
+        | '\u{FFF9}'..='\u{FFFB}' | '\u{110BD}' | '\u{110CD}' | '\u{13430}'..='\u{1343F}'
+        | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}' | '\u{E0000}'..='\u{E0FFF}')
+}
+
+/// Cut `s` to at most `max` bytes on a char boundary, marking the cut.
+pub fn truncate(s: &mut String, max: usize) {
+    if s.len() > max {
+        let mut end = max;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+        s.push_str(" …[truncated]");
+    }
+}
 
 /// Strip ANSI escape codes from a string.
 /// Handles both real ESC bytes (\x1b) and JSON-encoded (\u001b) forms.
@@ -88,5 +134,18 @@ mod tests {
             strip_ansi(r#"\u001B[1mBOLD\u001B[0m"#),
             "BOLD"
         );
+    }
+
+    #[test]
+    fn sanitize_removes_every_control_and_bidi_override() {
+        let nasty = "a\x1b[?1049lb\x1b]0;t\x07c\x1b]52;c;eA==\x1b\\d\u{9b}31me\u{9d}0;t\u{9c}f\r\x08\x07\x7f\u{202E}g\u{2066}h\x1bPq\x1b\\i\x1b]unterminated";
+        let out = sanitize(nasty);
+        assert!(!out.chars().any(|c| c.is_control()), "{:?}", out);
+        assert_eq!(out, "abcdefghi");
+    }
+
+    #[test]
+    fn sanitize_keeps_ordinary_text() {
+        assert_eq!(sanitize("café ✓ 日本 [x] a\tb"), "café ✓ 日本 [x] a b");
     }
 }
