@@ -9,7 +9,8 @@ A modern, colorful, high-performance log analysis TUI built in Rust. Streams log
 
 ## Features
 
-- **Multi-source streaming** — Docker containers, Azure Container Apps, shell commands, file tailing
+- **Multi-source streaming** — Docker containers, Azure Container Apps, shell commands, file tailing, and anything piped in (`--file -`)
+- **Headless modes** — `logradar summary` prints the top patterns (table or JSON, with `--fail-on` for CI); `logradar watch` follows logs without the TUI and prints new patterns and alerts
 - **Interactive source menu** — Press `a` to discover and add sources at runtime
 - **Template clustering (Drain)** — Lines that differ only in a few words share a template: `user alice logged in` + `user bob logged in` → `user <*> logged in`. Typically cuts the pattern count 5-10× on real logs. Use `--exact` to group only identical lines; keeps up to 5,000 patterns, dropping the least recently seen
 - **Structured logs** — JSON (pino, bunyan, zap, Serilog, ECS…) and logfmt lines are clustered on their message field, with the level read from `level`/`severity`
@@ -61,7 +62,27 @@ logradar tui --config ./my-config.toml --cmd "my-app"
 
 # Launch with a specific theme
 logradar tui --theme ember --docker my-container
+
+# Pipe anything in
+kubectl logs -f deploy/api | logradar tui --file -
 ```
+
+### Without the TUI
+
+```bash
+# Top patterns in a log, as a table or JSON
+logradar summary --file app.log
+logradar summary --file app.log --json --top 50
+
+# In CI: fail the job if the test run logged any errors
+cargo test 2>&1 | logradar summary --file - --fail-on error
+
+# Follow logs and print each new pattern once, plus any alerts from the config
+logradar watch --docker api --level warn
+logradar watch --file /var/log/app.log --json | jq .
+```
+
+`summary` exits 0 on success, 1 when `--fail-on` matched, 2 on errors (bad arguments, unreadable source). `watch` ends when its sources end (e.g. the pipe closes) or on Ctrl-C.
 
 ## Keybindings
 

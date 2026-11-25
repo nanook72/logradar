@@ -2,6 +2,7 @@ mod alert;
 mod app;
 mod config;
 mod discovery;
+mod headless;
 mod ingest;
 mod parse;
 mod pattern;
@@ -41,7 +42,7 @@ struct SourceArgs {
     #[arg(long)]
     cmd: Vec<String>,
 
-    /// File path to tail
+    /// File path to tail ('-' reads standard input)
     #[arg(long)]
     file: Vec<String>,
 }
@@ -85,19 +86,137 @@ struct TuiArgs {
     no_banner: bool,
 }
 
+#[derive(Args, Debug)]
+struct SummaryArgs {
+    #[command(flatten)]
+    sources: SourceArgs,
+
+    #[command(flatten)]
+    analysis: AnalysisArgs,
+
+    /// Lowest level to include (trace, debug, info, warn, error)
+    #[arg(long, default_value = "info")]
+    level: String,
+
+    /// How many patterns to print
+    #[arg(long, default_value_t = 20)]
+    top: usize,
+
+    /// Print JSON instead of a table
+    #[arg(long)]
+    json: bool,
+
+    /// Exit with status 1 if any pattern is at this level or above (for CI)
+    #[arg(long, value_name = "LEVEL")]
+    fail_on: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct WatchArgs {
+    #[command(flatten)]
+    sources: SourceArgs,
+
+    #[command(flatten)]
+    analysis: AnalysisArgs,
+
+    /// Lowest level to include (trace, debug, info, warn, error)
+    #[arg(long, default_value = "info")]
+    level: String,
+
+    /// Print JSON lines instead of text
+    #[arg(long)]
+    json: bool,
+
+    /// Don't print new patterns; only alerts from the config
+    #[arg(long)]
+    no_new: bool,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Launch the TUI dashboard
     Tui(TuiArgs),
+    /// Read logs once and print the most common patterns
+    Summary(SummaryArgs),
+    /// Follow logs without the TUI, printing new patterns and alerts
+    Watch(WatchArgs),
+}
+
+fn parse_level_arg(flag: &str, value: &str) -> Result<parse::Level> {
+    parse::level_from_str(value)
+        .ok_or_else(|| anyhow::anyhow!("{} '{}': use trace, debug, info, warn or error", flag, value))
+}
+
+/// Config, clustering and sources shared by the headless subcommands.
+fn headless_options(
+    sources: SourceArgs,
+    analysis: &AnalysisArgs,
+    level: &str,
+) -> Result<(config::Config, headless::Options)> {
+    let cfg = config::Config::load(analysis.config.as_deref())?;
+    let clustering = if analysis.exact {
+        pattern::Clustering::Exact
+    } else {
+        cfg.clustering.to_clustering()?
+    };
+    let opts = headless::Options {
+        docker: sources.docker,
+        cmd: sources.cmd,
+        file: sources.file,
+        clustering,
+        min_level: parse_level_arg("--level", level)?,
+    };
+    Ok((cfg, opts))
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
+async fn main() {
+    // Errors are for people: one line, no backtrace.
+    if let Err(e) = run(Cli::parse()).await {
+        eprintln!("logradar: {:#}", e);
+        std::process::exit(2);
+    }
+    // Exit now rather than when the runtime shuts down: a stdin reader is a
+    // blocking thread that would otherwise keep the process alive until the
+    // pipe closes. Sources have already been stopped.
+    std::process::exit(0);
+}
+
+async fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         Commands::Tui(args) => {
             run_tui(args).await?;
+        }
+        Commands::Summary(args) => {
+            let (_, opts) = headless_options(args.sources, &args.analysis, &args.level)?;
+            let fail_on = match &args.fail_on {
+                Some(l) => Some(parse_level_arg("--fail-on", l)?),
+                None => None,
+            };
+            let code = headless::summary(
+                opts,
+                headless::SummaryOptions {
+                    top: args.top,
+                    json: args.json,
+                    fail_on,
+                },
+            )
+            .await?;
+            std::process::exit(code);
+        }
+        Commands::Watch(args) => {
+            let (cfg, opts) = headless_options(args.sources, &args.analysis, &args.level)?;
+            let alerts = alert::AlertEngine::from_config(&cfg.alerts, &cfg.alert_settings)?;
+            headless::watch(
+                opts,
+                headless::WatchOptions {
+                    json: args.json,
+                    show_new: !args.no_new,
+                },
+                alerts,
+            )
+            .await?;
         }
     }
 
@@ -230,6 +349,9 @@ async fn run_tui(args: TuiArgs) -> Result<()> {
     crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
+    // Stop sources and give the aborted tasks a moment to kill their children.
+    app.stop_all_sources();
+    tokio::time::sleep(Duration::from_millis(50)).await;
     Ok(())
 }
 

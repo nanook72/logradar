@@ -313,6 +313,11 @@ impl PatternStore {
         self.evicted += 1;
     }
 
+    /// The id the next new pattern will get; every existing id is lower.
+    pub fn next_id(&self) -> u64 {
+        self.next_id
+    }
+
     /// How many patterns have been dropped to stay under the cap.
     pub fn evicted(&self) -> u64 {
         self.evicted

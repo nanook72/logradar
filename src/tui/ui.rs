@@ -234,6 +234,7 @@ fn provider_label(kind: &str) -> &str {
         "azure" => "Azure",
         "command" => "Command",
         "file" => "File",
+        "stdin" => "Stdin",
         _ => kind,
     }
 }

@@ -161,6 +161,14 @@ impl App {
         }
     }
 
+    /// Stop every source (aborting a task drops its child process, which
+    /// `kill_on_drop` kills).
+    pub fn stop_all_sources(&mut self) {
+        for (_, handle) in self.handles.drain() {
+            handle.abort();
+        }
+    }
+
     /// Abort and remove a source by id (kills child process via kill_on_drop).
     #[allow(dead_code)]
     pub fn stop_source(&mut self, source_id: &str) {
@@ -209,7 +217,7 @@ impl App {
 
     /// Provider ordering for the Sources pane.
     pub fn provider_order() -> &'static [&'static str] {
-        &["docker", "azure", "command", "file"]
+        &["docker", "azure", "command", "file", "stdin"]
     }
 
     /// Build the visible rows in the sources pane: headers + items.
@@ -389,7 +397,7 @@ impl App {
 
     pub fn add_docker_source(&mut self, container: String) {
         if let Some(tx) = self.tx.clone() {
-            let (info, handle) = ingest::spawn_docker(container, tx);
+            let (info, handle) = ingest::spawn_docker(container, ingest::Follow::Yes, tx);
             let id = info.id.clone();
             self.sources.push(info);
             self.handles.insert(id, handle);
@@ -398,7 +406,7 @@ impl App {
 
     pub fn add_file_source(&mut self, path: String) {
         if let Some(tx) = self.tx.clone() {
-            let (info, handle) = ingest::spawn_file(path, tx);
+            let (info, handle) = ingest::spawn_file(path, ingest::Follow::Yes, tx);
             let id = info.id.clone();
             self.sources.push(info);
             self.handles.insert(id, handle);

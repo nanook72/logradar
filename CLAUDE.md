@@ -15,6 +15,9 @@ cargo run -- tui --docker name    # launch TUI tailing a Docker container
 cargo run -- tui --file path      # launch TUI tailing a file
 cargo run -- tui --config path    # use a custom config file
 cargo run -- tui --theme nebula   # launch with a specific theme
+cargo run -- summary --file path  # headless: top patterns (--json, --fail-on error)
+cargo run -- watch --file -       # headless: follow stdin, print new patterns + alerts
+cargo test --test cli             # end-to-end tests of the binary (tests/cli.rs)
 ```
 
 ## Architecture
@@ -25,7 +28,8 @@ The main event loop in `main.rs::run_tui` is synchronous on the main thread: it 
 
 ### Module Responsibilities
 
-- **`main.rs`** — Clap CLI definition, terminal setup/teardown, event loop, key handling
+- **`main.rs`** — Clap CLI (`tui`, `summary`, `watch`; shared `SourceArgs`/`AnalysisArgs`), terminal setup/teardown, event loop, key handling. Errors print as one line and exit 2; after a clean run the process exits explicitly (a blocking stdin reader would otherwise hold the runtime open)
+- **`headless.rs`** — `summary` (sources read once via `ingest::Follow::No`, top patterns as table/JSON, exit 1 on `--fail-on`, 2 on source errors) and `watch` (follow, print new patterns immediately, evaluate alerts each second)
 - **`app.rs`** — Central `App` struct holding all state. Modes: Normal, Search, Drilldown, Help, ProfilePicker, SourceMenu. Panes: Sources, Patterns, Details. Source management with per-source handles (HashMap keyed by id).
 - **`config.rs`** — TOML config loading from `--config`, `./logradar.toml`, or `~/.config/logradar/config.toml`. Merges custom profiles with built-ins via `into_profiles()`.
 - **`parse/`** — `LogEvent` struct, structured JSON/logfmt parsing (clusters on the message field), level detection (explicit `[LEVEL]`/`level=` first, then case-insensitive whole-word search), normalization (regex replacement chain: timestamps→UUIDs→IPs→hex→durations→numbers). Applies ANSI stripping before all processing.

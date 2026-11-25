@@ -107,10 +107,19 @@ where
     }
 }
 
+/// Whether a source keeps streaming new lines or stops at the end of what is
+/// there now (for `logradar summary`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Follow {
+    Yes,
+    No,
+}
+
 // --- Docker source ---
 
 pub fn spawn_docker(
     container: String,
+    follow: Follow,
     tx: mpsc::Sender<SourceEvent>,
 ) -> (SourceInfo, tokio::task::JoinHandle<()>) {
     let id = format!("docker/{}", container);
@@ -120,14 +129,19 @@ pub fn spawn_docker(
         status: SourceStatus::Starting,
     };
     let handle = tokio::spawn(async move {
-        let _ = run_docker(&container, &id, tx).await;
+        let _ = run_docker(&container, follow, &id, tx).await;
     });
     (info, handle)
 }
 
-async fn run_docker(container: &str, source_id: &str, tx: mpsc::Sender<SourceEvent>) -> Result<()> {
+async fn run_docker(container: &str, follow: Follow, source_id: &str, tx: mpsc::Sender<SourceEvent>) -> Result<()> {
+    let args: &[&str] = match follow {
+        Follow::Yes => &["logs", "-f", "--tail", "100", "--"],
+        Follow::No => &["logs", "--"],
+    };
     let result = Command::new("docker")
-        .args(["logs", "-f", "--tail", "100", "--", container])
+        .args(args)
+        .arg(container)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -537,10 +551,15 @@ async fn curl_post_json(url: &str, auth_header: &str) -> Result<serde_json::Valu
 
 // --- File tail source ---
 
+/// Tail a file; the path `-` means standard input.
 pub fn spawn_file(
     path: String,
+    follow: Follow,
     tx: mpsc::Sender<SourceEvent>,
 ) -> (SourceInfo, tokio::task::JoinHandle<()>) {
+    if path == "-" {
+        return spawn_stdin(tx);
+    }
     let id = format!("file/{}", path);
     let info = SourceInfo {
         id: id.clone(),
@@ -548,7 +567,71 @@ pub fn spawn_file(
         status: SourceStatus::Starting,
     };
     let handle = tokio::spawn(async move {
-        let _ = run_file_tail(&path, &id, tx).await;
+        let _ = match follow {
+            Follow::Yes => run_file_tail(&path, &id, tx).await,
+            Follow::No => run_file_once(&path, &id, tx).await,
+        };
+    });
+    (info, handle)
+}
+
+/// Read a file to its end once.
+async fn run_file_once(path: &str, source_id: &str, tx: mpsc::Sender<SourceEvent>) -> Result<()> {
+    match tokio::fs::File::open(path).await {
+        Ok(file) => {
+            let _ = tx
+                .send(SourceEvent::Status {
+                    source: source_id.to_string(),
+                    status: SourceStatus::Running,
+                })
+                .await;
+            forward_lines(file, source_id, tx.clone(), false).await;
+            let _ = tx
+                .send(SourceEvent::Status {
+                    source: source_id.to_string(),
+                    status: SourceStatus::Stopped,
+                })
+                .await;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = tx
+                .send(SourceEvent::Status {
+                    source: source_id.to_string(),
+                    status: SourceStatus::Error(format!("{}: {}", path, e)),
+                })
+                .await;
+            Err(e.into())
+        }
+    }
+}
+
+// --- Standard input ---
+
+/// Read lines piped into logradar until EOF (`cmd | logradar ... --file -`).
+/// The TUI still gets keys: crossterm reads them from /dev/tty when stdin
+/// isn't a terminal.
+pub fn spawn_stdin(tx: mpsc::Sender<SourceEvent>) -> (SourceInfo, tokio::task::JoinHandle<()>) {
+    let id = "stdin".to_string();
+    let info = SourceInfo {
+        id: id.clone(),
+        kind: "stdin".into(),
+        status: SourceStatus::Starting,
+    };
+    let handle = tokio::spawn(async move {
+        let _ = tx
+            .send(SourceEvent::Status {
+                source: id.clone(),
+                status: SourceStatus::Running,
+            })
+            .await;
+        forward_lines(tokio::io::stdin(), &id, tx.clone(), false).await;
+        let _ = tx
+            .send(SourceEvent::Status {
+                source: id,
+                status: SourceStatus::Stopped,
+            })
+            .await;
     });
     (info, handle)
 }
