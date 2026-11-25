@@ -19,14 +19,8 @@ impl SourceStatus {
 }
 
 pub enum SourceEvent {
-    Log {
-        source: String,
-        line: String,
-    },
-    Status {
-        source: String,
-        status: SourceStatus,
-    },
+    Log { source: String, line: String },
+    Status { source: String, status: SourceStatus },
 }
 
 #[allow(dead_code)]
@@ -65,21 +59,17 @@ async fn run_docker(container: &str, source_id: &str, tx: mpsc::Sender<SourceEve
 
     let mut child = match result {
         Ok(child) => {
-            let _ = tx
-                .send(SourceEvent::Status {
-                    source: source_id.to_string(),
-                    status: SourceStatus::Running,
-                })
-                .await;
+            let _ = tx.send(SourceEvent::Status {
+                source: source_id.to_string(),
+                status: SourceStatus::Running,
+            }).await;
             child
         }
         Err(e) => {
-            let _ = tx
-                .send(SourceEvent::Status {
-                    source: source_id.to_string(),
-                    status: SourceStatus::Error(format!("docker: {}", e)),
-                })
-                .await;
+            let _ = tx.send(SourceEvent::Status {
+                source: source_id.to_string(),
+                status: SourceStatus::Error(format!("docker: {}", e)),
+            }).await;
             return Err(e.into());
         }
     };
@@ -96,14 +86,7 @@ async fn run_docker(container: &str, source_id: &str, tx: mpsc::Sender<SourceEve
         if let Some(out) = stdout {
             let mut lines = BufReader::new(out).lines();
             while let Some(line) = lines.next_line().await.unwrap_or(None) {
-                if tx
-                    .send(SourceEvent::Log {
-                        source: sid.clone(),
-                        line,
-                    })
-                    .await
-                    .is_err()
-                {
+                if tx.send(SourceEvent::Log { source: sid.clone(), line }).await.is_err() {
                     break;
                 }
             }
@@ -114,14 +97,7 @@ async fn run_docker(container: &str, source_id: &str, tx: mpsc::Sender<SourceEve
         if let Some(err) = stderr {
             let mut lines = BufReader::new(err).lines();
             while let Some(line) = lines.next_line().await.unwrap_or(None) {
-                if tx2
-                    .send(SourceEvent::Log {
-                        source: sid2.clone(),
-                        line,
-                    })
-                    .await
-                    .is_err()
-                {
+                if tx2.send(SourceEvent::Log { source: sid2.clone(), line }).await.is_err() {
                     break;
                 }
             }
@@ -164,21 +140,17 @@ async fn run_command(cmd: &str, source_id: &str, tx: mpsc::Sender<SourceEvent>) 
 
     let mut child = match result {
         Ok(child) => {
-            let _ = tx
-                .send(SourceEvent::Status {
-                    source: source_id.to_string(),
-                    status: SourceStatus::Running,
-                })
-                .await;
+            let _ = tx.send(SourceEvent::Status {
+                source: source_id.to_string(),
+                status: SourceStatus::Running,
+            }).await;
             child
         }
         Err(e) => {
-            let _ = tx
-                .send(SourceEvent::Status {
-                    source: source_id.to_string(),
-                    status: SourceStatus::Error(format!("command: {}", e)),
-                })
-                .await;
+            let _ = tx.send(SourceEvent::Status {
+                source: source_id.to_string(),
+                status: SourceStatus::Error(format!("command: {}", e)),
+            }).await;
             return Err(e.into());
         }
     };
@@ -200,12 +172,10 @@ async fn run_command(cmd: &str, source_id: &str, tx: mpsc::Sender<SourceEvent>) 
         }
     }
 
-    let _ = tx
-        .send(SourceEvent::Status {
-            source: source_id.to_string(),
-            status: SourceStatus::Stopped,
-        })
-        .await;
+    let _ = tx.send(SourceEvent::Status {
+        source: source_id.to_string(),
+        status: SourceStatus::Stopped,
+    }).await;
 
     let _ = child.wait().await;
     Ok(())
@@ -227,15 +197,7 @@ pub fn spawn_azure_containerapp(
         status: SourceStatus::Starting,
     };
     let handle = tokio::spawn(async move {
-        let _ = run_azure_containerapp(
-            &app_name,
-            &resource_group,
-            &subscription_id,
-            token.as_deref(),
-            &id,
-            tx,
-        )
-        .await;
+        let _ = run_azure_containerapp(&app_name, &resource_group, &subscription_id, token.as_deref(), &id, tx).await;
     });
     (info, handle)
 }
@@ -251,16 +213,7 @@ async fn run_azure_containerapp(
     // Try the fast curl-based approach if we have a pre-fetched token
     if let Some(token) = token {
         if !subscription_id.is_empty() {
-            match run_azure_fast(
-                app_name,
-                resource_group,
-                subscription_id,
-                token,
-                source_id,
-                &tx,
-            )
-            .await
-            {
+            match run_azure_fast(app_name, resource_group, subscription_id, token, source_id, &tx).await {
                 Ok(()) => return Ok(()),
                 Err(_) => {
                     // Fast path failed — fall through to az CLI
@@ -310,8 +263,11 @@ async fn run_azure_fast(
         .to_string();
 
     // Step 3: Get latest active revision
-    let revisions_json =
-        curl_get_json(&format!("{}/revisions?{}", base, api), &auth_header).await?;
+    let revisions_json = curl_get_json(
+        &format!("{}/revisions?{}", base, api),
+        &auth_header,
+    )
+    .await?;
     let latest_rev = revisions_json
         .pointer("/value/0/name")
         .and_then(|v| v.as_str())
@@ -331,7 +287,11 @@ async fn run_azure_fast(
         .to_string();
 
     // Step 5: Get log stream auth token
-    let auth_json = curl_post_json(&format!("{}/getAuthToken?{}", base, api), &auth_header).await?;
+    let auth_json = curl_post_json(
+        &format!("{}/getAuthToken?{}", base, api),
+        &auth_header,
+    )
+    .await?;
     let log_token = auth_json
         .pointer("/properties/token")
         .and_then(|v| v.as_str())
@@ -345,11 +305,8 @@ async fn run_azure_fast(
 
     let mut child = Command::new("curl")
         .args([
-            "-N",
-            "-s",
-            "-f",
-            "-H",
-            &format!("Authorization: Bearer {}", log_token),
+            "-N", "-s", "-f",
+            "-H", &format!("Authorization: Bearer {}", log_token),
             &log_url,
         ])
         .stdout(std::process::Stdio::piped())
@@ -363,12 +320,10 @@ async fn run_azure_fast(
         let mut first = true;
         while let Some(line) = lines.next_line().await? {
             if first {
-                let _ = tx
-                    .send(SourceEvent::Status {
-                        source: source_id.to_string(),
-                        status: SourceStatus::Running,
-                    })
-                    .await;
+                let _ = tx.send(SourceEvent::Status {
+                    source: source_id.to_string(),
+                    status: SourceStatus::Running,
+                }).await;
                 first = false;
             }
             if tx
@@ -384,12 +339,10 @@ async fn run_azure_fast(
         }
     }
 
-    let _ = tx
-        .send(SourceEvent::Status {
-            source: source_id.to_string(),
-            status: SourceStatus::Stopped,
-        })
-        .await;
+    let _ = tx.send(SourceEvent::Status {
+        source: source_id.to_string(),
+        status: SourceStatus::Stopped,
+    }).await;
 
     let _ = child.wait().await;
     Ok(())
@@ -423,12 +376,10 @@ async fn run_azure_cli(
     let mut child = match result {
         Ok(child) => child,
         Err(e) => {
-            let _ = tx
-                .send(SourceEvent::Status {
-                    source: source_id.to_string(),
-                    status: SourceStatus::Error(format!("az: {}", e)),
-                })
-                .await;
+            let _ = tx.send(SourceEvent::Status {
+                source: source_id.to_string(),
+                status: SourceStatus::Error(format!("az: {}", e)),
+            }).await;
             return Err(e.into());
         }
     };
@@ -439,12 +390,10 @@ async fn run_azure_cli(
         let mut first = true;
         while let Some(line) = lines.next_line().await? {
             if first {
-                let _ = tx
-                    .send(SourceEvent::Status {
-                        source: source_id.to_string(),
-                        status: SourceStatus::Running,
-                    })
-                    .await;
+                let _ = tx.send(SourceEvent::Status {
+                    source: source_id.to_string(),
+                    status: SourceStatus::Running,
+                }).await;
                 first = false;
             }
             if tx
@@ -460,12 +409,10 @@ async fn run_azure_cli(
         }
     }
 
-    let _ = tx
-        .send(SourceEvent::Status {
-            source: source_id.to_string(),
-            status: SourceStatus::Stopped,
-        })
-        .await;
+    let _ = tx.send(SourceEvent::Status {
+        source: source_id.to_string(),
+        status: SourceStatus::Stopped,
+    }).await;
 
     let _ = child.wait().await;
     Ok(())
@@ -487,13 +434,9 @@ async fn curl_get_json(url: &str, auth_header: &str) -> Result<serde_json::Value
 async fn curl_post_json(url: &str, auth_header: &str) -> Result<serde_json::Value> {
     let output = Command::new("curl")
         .args([
-            "-sf",
-            "-X",
-            "POST",
-            "-H",
-            auth_header,
-            "-H",
-            "Content-Type: application/json",
+            "-sf", "-X", "POST",
+            "-H", auth_header,
+            "-H", "Content-Type: application/json",
             url,
         ])
         .output()
@@ -532,21 +475,17 @@ async fn run_file_tail(path: &str, source_id: &str, tx: mpsc::Sender<SourceEvent
 
     let mut child = match result {
         Ok(child) => {
-            let _ = tx
-                .send(SourceEvent::Status {
-                    source: source_id.to_string(),
-                    status: SourceStatus::Running,
-                })
-                .await;
+            let _ = tx.send(SourceEvent::Status {
+                source: source_id.to_string(),
+                status: SourceStatus::Running,
+            }).await;
             child
         }
         Err(e) => {
-            let _ = tx
-                .send(SourceEvent::Status {
-                    source: source_id.to_string(),
-                    status: SourceStatus::Error(format!("tail: {}", e)),
-                })
-                .await;
+            let _ = tx.send(SourceEvent::Status {
+                source: source_id.to_string(),
+                status: SourceStatus::Error(format!("tail: {}", e)),
+            }).await;
             return Err(e.into());
         }
     };
@@ -568,12 +507,10 @@ async fn run_file_tail(path: &str, source_id: &str, tx: mpsc::Sender<SourceEvent
         }
     }
 
-    let _ = tx
-        .send(SourceEvent::Status {
-            source: source_id.to_string(),
-            status: SourceStatus::Stopped,
-        })
-        .await;
+    let _ = tx.send(SourceEvent::Status {
+        source: source_id.to_string(),
+        status: SourceStatus::Stopped,
+    }).await;
 
     let _ = child.wait().await;
     Ok(())

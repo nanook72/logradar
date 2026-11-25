@@ -402,7 +402,11 @@ impl App {
 
     pub fn add_command_source(&mut self, cmd: String) {
         if let Some(tx) = self.tx.clone() {
-            let name = cmd.split_whitespace().next().unwrap_or("cmd").to_string();
+            let name = cmd
+                .split_whitespace()
+                .next()
+                .unwrap_or("cmd")
+                .to_string();
             let (info, handle) = ingest::spawn_command(name, cmd, tx);
             let id = info.id.clone();
             self.sources.push(info);

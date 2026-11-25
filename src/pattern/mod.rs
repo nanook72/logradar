@@ -368,10 +368,7 @@ mod tests {
     #[test]
     fn integration_with_parse() {
         let mut store = PatternStore::new();
-        let ev = parse::parse_line(
-            "src",
-            "2025-01-01T00:00:00Z [ERROR] timeout from 10.0.0.1 after 500ms",
-        );
+        let ev = parse::parse_line("src", "2025-01-01T00:00:00Z [ERROR] timeout from 10.0.0.1 after 500ms");
         store.ingest(&ev);
         assert_eq!(store.len(), 1);
         let p = &store.patterns()[0];

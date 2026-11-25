@@ -9,11 +9,7 @@ pub struct SearchResult {
     pub matched_indices: Vec<usize>,
 }
 
-pub fn fuzzy_search(
-    query: &str,
-    patterns: &[Pattern],
-    sorted_indices: &[usize],
-) -> Vec<SearchResult> {
+pub fn fuzzy_search(query: &str, patterns: &[Pattern], sorted_indices: &[usize]) -> Vec<SearchResult> {
     if query.is_empty() {
         return sorted_indices
             .iter()

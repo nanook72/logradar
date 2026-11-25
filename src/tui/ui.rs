@@ -2,10 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState,
-        Wrap,
-    },
+    widgets::{Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState, Wrap},
     Frame,
 };
 
@@ -35,9 +32,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(h), // header (dynamic)
-            Constraint::Min(3),    // body
-            Constraint::Length(1), // status bar
+            Constraint::Length(h),  // header (dynamic)
+            Constraint::Min(3),     // body
+            Constraint::Length(1),  // status bar
         ])
         .split(f.size());
 
@@ -122,8 +119,11 @@ fn render_sources(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         } else {
             "No sources"
         };
-        let empty =
-            Paragraph::new(Span::styled(msg, Style::default().fg(theme.text_dim))).block(block);
+        let empty = Paragraph::new(Span::styled(
+            msg,
+            Style::default().fg(theme.text_dim),
+        ))
+        .block(block);
         f.render_widget(empty, area);
         return;
     }
@@ -157,7 +157,10 @@ fn render_sources(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 ListItem::new(Line::from(vec![
                     Span::styled(format!("{} ", chevron), header_style),
                     Span::styled(format!("{} ({})", label, count), header_style),
-                    Span::styled(rate_str, Style::default().fg(theme.success)),
+                    Span::styled(
+                        rate_str,
+                        Style::default().fg(theme.success),
+                    ),
                 ]))
             } else {
                 let src = &app.sources[src_idx.unwrap()];
@@ -169,8 +172,7 @@ fn render_sources(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                     match &src.status {
                         SourceStatus::Running => ("●".to_string(), theme.success),
                         SourceStatus::Starting => {
-                            let ch =
-                                SPINNER_CHARS[(app.tick_count / 4) as usize % SPINNER_CHARS.len()];
+                            let ch = SPINNER_CHARS[(app.tick_count / 4) as usize % SPINNER_CHARS.len()];
                             (ch.to_string(), theme.warn)
                         }
                         SourceStatus::Error(_) => ("✖".to_string(), theme.error),
@@ -180,7 +182,9 @@ fn render_sources(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
                 let is_selected = row_idx == app.selected_source && focused;
                 let style = if is_selected {
-                    Style::default().fg(theme.selected_fg).bg(theme.selected_bg)
+                    Style::default()
+                        .fg(theme.selected_fg)
+                        .bg(theme.selected_bg)
                 } else if is_filtered {
                     Style::default()
                         .fg(theme.header_accent)
@@ -212,7 +216,10 @@ fn render_sources(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                     Span::raw("  "),
                     Span::styled(format!("{} ", marker), Style::default().fg(marker_color)),
                     Span::styled(display_name.to_string(), style),
-                    Span::styled(rate_str, Style::default().fg(rate_color)),
+                    Span::styled(
+                        rate_str,
+                        Style::default().fg(rate_color),
+                    ),
                 ]))
             }
         })
@@ -233,8 +240,8 @@ fn provider_label(kind: &str) -> &str {
 }
 
 fn render_patterns(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let focused =
-        app.active_pane == Pane::Patterns && matches!(app.mode, AppMode::Normal | AppMode::Search);
+    let focused = app.active_pane == Pane::Patterns
+        && matches!(app.mode, AppMode::Normal | AppMode::Search);
     let source_tag = app
         .active_source_filter
         .as_ref()
@@ -361,21 +368,15 @@ fn render_patterns(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             };
             let trend_cell = Cell::from(Line::from(Span::styled(
                 trend_str,
-                Style::default().fg(trend_color).add_modifier(if p.spike {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
+                Style::default().fg(trend_color).add_modifier(
+                    if p.spike { Modifier::BOLD } else { Modifier::empty() },
+                ),
             )));
 
             // Signature with ellipsis truncation + keyword highlighting
             let sig = ellipsis_truncate(&p.canonical, sig_width);
             let sig_cell = if !sr.matched_indices.is_empty() {
-                Cell::from(Line::from(highlight_matches(
-                    &sig,
-                    &sr.matched_indices,
-                    theme,
-                )))
+                Cell::from(Line::from(highlight_matches(&sig, &sr.matched_indices, theme)))
             } else if is_selected {
                 Cell::from(Line::from(highlight_sig_keywords(&sig, theme, true)))
             } else {
@@ -386,17 +387,18 @@ fn render_patterns(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             let spark_spans = render_spark(
                 &p.sparkline_buckets,
                 p.current_bucket_count,
-                if p.spike {
-                    theme.accent
-                } else {
-                    theme.sparkline
-                },
+                if p.spike { theme.accent } else { theme.sparkline },
                 theme,
             );
             let spark_cell = Cell::from(Line::from(spark_spans));
 
             Row::new(vec![
-                badge_cell, count_cell, rate_cell, trend_cell, sig_cell, spark_cell,
+                badge_cell,
+                count_cell,
+                rate_cell,
+                trend_cell,
+                sig_cell,
+                spark_cell,
             ])
         })
         .collect();
@@ -406,7 +408,7 @@ fn render_patterns(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Constraint::Length(5),  // Count
         Constraint::Length(6),  // 1m rate
         Constraint::Length(3),  // Trend
-        Constraint::Min(10),    // Signature
+        Constraint::Min(10),   // Signature
         Constraint::Length(24), // Sparkline (24 buckets)
     ];
 
@@ -515,11 +517,7 @@ fn render_details(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
         // --- Latest Sample section ---
         lines.push(Line::from(Span::styled(
-            if app.show_normalized {
-                "NORMALIZED"
-            } else {
-                "LATEST SAMPLE"
-            },
+            if app.show_normalized { "NORMALIZED" } else { "LATEST SAMPLE" },
             Style::default()
                 .fg(theme.text_dim)
                 .add_modifier(Modifier::BOLD),
@@ -575,7 +573,9 @@ fn render_drilldown(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                     sample.clone()
                 };
                 let style = if i == app.detail_scroll {
-                    Style::default().fg(theme.selected_fg).bg(theme.selected_bg)
+                    Style::default()
+                        .fg(theme.selected_fg)
+                        .bg(theme.selected_bg)
                 } else {
                     Style::default().fg(theme.text)
                 };
@@ -628,11 +628,15 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             Span::styled(" Search: ", style.add_modifier(Modifier::BOLD)),
             Span::styled(
                 app.search_query.clone(),
-                Style::default().fg(theme.accent).bg(theme.status_bar_bg),
+                Style::default()
+                    .fg(theme.accent)
+                    .bg(theme.status_bar_bg),
             ),
             Span::styled(
                 "█",
-                Style::default().fg(theme.accent).bg(theme.status_bar_bg),
+                Style::default()
+                    .fg(theme.accent)
+                    .bg(theme.status_bar_bg),
             ),
         ]);
         let bar = Paragraph::new(line).style(style);
@@ -670,14 +674,21 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         ),
         Span::styled(
             rate_str,
-            Style::default().fg(rate_color).bg(theme.status_bar_bg),
+            Style::default()
+                .fg(rate_color)
+                .bg(theme.status_bar_bg),
         ),
         Span::styled(" │ ", style),
         Span::styled(
             theme.name.clone(),
-            Style::default().fg(theme.accent).bg(theme.status_bar_bg),
+            Style::default()
+                .fg(theme.accent)
+                .bg(theme.status_bar_bg),
         ),
-        Span::styled(format!(" │ {} ", profile_name), style),
+        Span::styled(
+            format!(" │ {} ", profile_name),
+            style,
+        ),
         Span::styled(
             paused.to_string(),
             Style::default()
@@ -686,58 +697,14 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("│ ", style),
-        Span::styled(
-            "?",
-            Style::default()
-                .fg(theme.accent)
-                .bg(theme.status_bar_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "=help ",
-            Style::default()
-                .fg(theme.status_bar_fg)
-                .bg(theme.status_bar_bg),
-        ),
-        Span::styled(
-            "a",
-            Style::default()
-                .fg(theme.accent)
-                .bg(theme.status_bar_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "=add ",
-            Style::default()
-                .fg(theme.status_bar_fg)
-                .bg(theme.status_bar_bg),
-        ),
-        Span::styled(
-            "/",
-            Style::default()
-                .fg(theme.accent)
-                .bg(theme.status_bar_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "=search ",
-            Style::default()
-                .fg(theme.status_bar_fg)
-                .bg(theme.status_bar_bg),
-        ),
-        Span::styled(
-            "q",
-            Style::default()
-                .fg(theme.accent)
-                .bg(theme.status_bar_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "=quit ",
-            Style::default()
-                .fg(theme.status_bar_fg)
-                .bg(theme.status_bar_bg),
-        ),
+        Span::styled("?", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
+        Span::styled("=help ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
+        Span::styled("a", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
+        Span::styled("=add ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
+        Span::styled("/", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
+        Span::styled("=search ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
+        Span::styled("q", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
+        Span::styled("=quit ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
     ]);
 
     let bar = Paragraph::new(line).style(style);
@@ -768,7 +735,9 @@ fn render_source_menu(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 .map(|(i, label)| {
                     let marker = if i == menu.main_cursor { "▸ " } else { "  " };
                     let style = if i == menu.main_cursor {
-                        Style::default().fg(theme.selected_fg).bg(theme.selected_bg)
+                        Style::default()
+                            .fg(theme.selected_fg)
+                            .bg(theme.selected_bg)
                     } else {
                         Style::default().fg(theme.text)
                     };
@@ -806,8 +775,11 @@ fn render_source_menu(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             }
 
             if let Some(ref err) = menu.docker_error {
-                let p = Paragraph::new(Span::styled(err.clone(), Style::default().fg(theme.error)))
-                    .block(block);
+                let p = Paragraph::new(Span::styled(
+                    err.clone(),
+                    Style::default().fg(theme.error),
+                ))
+                .block(block);
                 f.render_widget(p, area);
                 return;
             }
@@ -838,13 +810,18 @@ fn render_source_menu(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                         "  "
                     };
                     let style = if i == menu.discovery_cursor {
-                        Style::default().fg(theme.selected_fg).bg(theme.selected_bg)
+                        Style::default()
+                            .fg(theme.selected_fg)
+                            .bg(theme.selected_bg)
                     } else {
                         Style::default().fg(theme.text)
                     };
                     ListItem::new(Line::from(vec![
                         Span::styled(cursor, Style::default().fg(theme.accent)),
-                        Span::styled(checkbox.to_string(), Style::default().fg(theme.success)),
+                        Span::styled(
+                            checkbox.to_string(),
+                            Style::default().fg(theme.success),
+                        ),
                         Span::styled(c.name.clone(), style),
                         Span::styled(
                             format!("  {}", c.image),
@@ -881,8 +858,11 @@ fn render_source_menu(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             }
 
             if let Some(ref err) = menu.azure_error {
-                let p = Paragraph::new(Span::styled(err.clone(), Style::default().fg(theme.error)))
-                    .block(block);
+                let p = Paragraph::new(Span::styled(
+                    err.clone(),
+                    Style::default().fg(theme.error),
+                ))
+                .block(block);
                 f.render_widget(p, area);
                 return;
             }
@@ -913,13 +893,18 @@ fn render_source_menu(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                         "  "
                     };
                     let style = if i == menu.discovery_cursor {
-                        Style::default().fg(theme.selected_fg).bg(theme.selected_bg)
+                        Style::default()
+                            .fg(theme.selected_fg)
+                            .bg(theme.selected_bg)
                     } else {
                         Style::default().fg(theme.text)
                     };
                     ListItem::new(Line::from(vec![
                         Span::styled(cursor, Style::default().fg(theme.accent)),
-                        Span::styled(checkbox.to_string(), Style::default().fg(theme.success)),
+                        Span::styled(
+                            checkbox.to_string(),
+                            Style::default().fg(theme.success),
+                        ),
                         Span::styled(a.name.clone(), style),
                         Span::styled(
                             format!("  ({})", a.resource_group),
@@ -947,7 +932,10 @@ fn render_source_menu(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
             let text = Line::from(vec![
                 Span::styled("Path: ", Style::default().fg(theme.text_dim)),
-                Span::styled(menu.text_input.clone(), Style::default().fg(theme.text)),
+                Span::styled(
+                    menu.text_input.clone(),
+                    Style::default().fg(theme.text),
+                ),
                 Span::styled("█", Style::default().fg(theme.accent)),
             ]);
 
@@ -969,7 +957,10 @@ fn render_source_menu(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
             let text = Line::from(vec![
                 Span::styled("$ ", Style::default().fg(theme.accent)),
-                Span::styled(menu.text_input.clone(), Style::default().fg(theme.text)),
+                Span::styled(
+                    menu.text_input.clone(),
+                    Style::default().fg(theme.text),
+                ),
                 Span::styled("█", Style::default().fg(theme.accent)),
             ]);
 
@@ -1076,9 +1067,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let sep: String = "─".repeat(w);
     let sep_line = Paragraph::new(Line::from(Span::styled(
         sep,
-        Style::default()
-            .fg(theme.banner_separator)
-            .bg(theme.header_bg),
+        Style::default().fg(theme.banner_separator).bg(theme.header_bg),
     )))
     .style(Style::default().bg(theme.header_bg));
     f.render_widget(sep_line, chunks[1]);
@@ -1126,7 +1115,10 @@ fn render_header_minimal(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             ),
             Style::default().fg(theme.header_fg).bg(theme.header_bg),
         ),
-        Span::styled(" ".repeat(pad), Style::default().bg(theme.header_bg)),
+        Span::styled(
+            " ".repeat(pad),
+            Style::default().bg(theme.header_bg),
+        ),
         Span::styled(
             right,
             Style::default().fg(theme.header_accent).bg(theme.header_bg),
@@ -1143,14 +1135,7 @@ fn render_header_stats(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
     let left = format!(
         " logradar  {}  {} sources  {}  {} patterns  {}  {} events  {}  {:.0} evt/m",
-        "▸",
-        app.sources.len(),
-        "▸",
-        app.store.len(),
-        "▸",
-        app.log_count,
-        "▸",
-        total_rate,
+        "▸", app.sources.len(), "▸", app.store.len(), "▸", app.log_count, "▸", total_rate,
     );
     let right = format!("{}  ", clock);
     let pad = (area.width as usize).saturating_sub(left.len() + right.len());
@@ -1181,7 +1166,10 @@ fn render_header_stats(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             ),
             Style::default().fg(theme.header_fg).bg(theme.header_bg),
         ),
-        Span::styled(" ".repeat(pad), Style::default().bg(theme.header_bg)),
+        Span::styled(
+            " ".repeat(pad),
+            Style::default().bg(theme.header_bg),
+        ),
         Span::styled(
             right,
             Style::default().fg(theme.header_accent).bg(theme.header_bg),
@@ -1256,26 +1244,31 @@ fn render_help(f: &mut Frame, area: Rect, theme: &Theme) {
 
 fn help_line<'a>(key: &'a str, desc: &'a str, theme: &Theme) -> Line<'a> {
     Line::from(vec![
-        Span::styled(format!("  {:<18}", key), Style::default().fg(theme.accent)),
+        Span::styled(
+            format!("  {:<18}", key),
+            Style::default().fg(theme.accent),
+        ),
         Span::styled(desc, Style::default().fg(theme.text)),
     ])
 }
 
 fn render_profile_picker(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let block = pane_block(
-        "Profile Picker (Enter to select, Esc to cancel)",
-        true,
-        theme,
-    );
+    let block = pane_block("Profile Picker (Enter to select, Esc to cancel)", true, theme);
 
     let items: Vec<ListItem> = app
         .profiles
         .iter()
         .enumerate()
         .map(|(i, profile)| {
-            let marker = if i == app.profile_index { "▸ " } else { "  " };
+            let marker = if i == app.profile_index {
+                "▸ "
+            } else {
+                "  "
+            };
             let style = if i == app.profile_index {
-                Style::default().fg(theme.selected_fg).bg(theme.selected_bg)
+                Style::default()
+                    .fg(theme.selected_fg)
+                    .bg(theme.selected_bg)
             } else {
                 Style::default().fg(theme.text)
             };
@@ -1286,7 +1279,10 @@ fn render_profile_picker(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             );
             ListItem::new(Line::from(vec![
                 Span::styled(marker, Style::default().fg(theme.accent)),
-                Span::styled(profile.name.clone(), style.add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    profile.name.clone(),
+                    style.add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(detail, Style::default().fg(theme.text_dim)),
             ]))
         })
@@ -1309,7 +1305,10 @@ fn highlight_matches<'a>(text: &str, indices: &[usize], theme: &Theme) -> Vec<Sp
     for (i, &ch) in chars.iter().enumerate() {
         if indices.contains(&i) {
             if !normal_buf.is_empty() {
-                spans.push(Span::styled(std::mem::take(&mut normal_buf), normal_style));
+                spans.push(Span::styled(
+                    std::mem::take(&mut normal_buf),
+                    normal_style,
+                ));
             }
             spans.push(Span::styled(ch.to_string(), match_style));
         } else {
@@ -1401,11 +1400,7 @@ fn render_spark<'a>(
     }
 
     // Soft-cap normalization: use mean of non-zero values × 3
-    let nonzero: Vec<f64> = values
-        .iter()
-        .filter(|&&v| v > 0)
-        .map(|&v| v as f64)
-        .collect();
+    let nonzero: Vec<f64> = values.iter().filter(|&&v| v > 0).map(|&v| v as f64).collect();
     let cap = if nonzero.is_empty() {
         1.0
     } else {
@@ -1454,14 +1449,14 @@ fn highlight_sig_keywords<'a>(text: &str, theme: &Theme, selected: bool) -> Vec<
     let error_style = Style::default()
         .fg(theme.error)
         .add_modifier(Modifier::BOLD);
-    let warn_style = Style::default().fg(theme.warn).add_modifier(Modifier::BOLD);
+    let warn_style = Style::default()
+        .fg(theme.warn)
+        .add_modifier(Modifier::BOLD);
 
     let mut spans = Vec::new();
     let mut buf = String::new();
 
-    for word in text.split_inclusive(|c: char| {
-        c.is_whitespace() || c == '=' || c == ':' || c == ',' || c == ';'
-    }) {
+    for word in text.split_inclusive(|c: char| c.is_whitespace() || c == '=' || c == ':' || c == ',' || c == ';') {
         let trimmed = word.trim();
         let upper = trimmed.to_ascii_uppercase();
         if upper == "ERROR" || upper == "ERR" || upper == "FATAL" || upper == "PANIC" {
@@ -1496,12 +1491,12 @@ fn highlight_sample_terms<'a>(text: &str, theme: &Theme) -> Vec<Span<'a>> {
     let error_style = Style::default()
         .fg(theme.error)
         .add_modifier(Modifier::BOLD);
-    let warn_style = Style::default().fg(theme.warn).add_modifier(Modifier::BOLD);
+    let warn_style = Style::default()
+        .fg(theme.warn)
+        .add_modifier(Modifier::BOLD);
 
     // Simple word-based highlighting
-    for word in text.split_inclusive(|c: char| {
-        c.is_whitespace() || c == '=' || c == ':' || c == ',' || c == ';'
-    }) {
+    for word in text.split_inclusive(|c: char| c.is_whitespace() || c == '=' || c == ':' || c == ',' || c == ';') {
         let trimmed = word.trim();
         let upper = trimmed.to_ascii_uppercase();
         if upper == "ERROR" || upper == "ERR" || upper == "FATAL" || upper == "PANIC" {
@@ -1514,9 +1509,7 @@ fn highlight_sample_terms<'a>(text: &str, theme: &Theme) -> Vec<Span<'a>> {
                 spans.push(Span::styled(std::mem::take(&mut buf), text_style));
             }
             spans.push(Span::styled(word.to_string(), warn_style));
-        } else if trimmed
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == ':')
+        } else if trimmed.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == ':')
             && trimmed.chars().any(|c| c.is_ascii_digit())
             && trimmed.len() > 0
         {
