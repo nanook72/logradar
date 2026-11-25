@@ -1,4 +1,6 @@
 use tokio::process::Command;
+
+use crate::util::sanitize;
 use tokio::sync::mpsc;
 
 #[allow(dead_code)]
@@ -42,7 +44,7 @@ async fn run_docker_discovery() -> Result<Vec<DockerContainer>, String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("docker ps failed: {}", stderr.trim()));
+        return Err(format!("docker ps failed: {}", sanitize(stderr.trim())));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -53,10 +55,10 @@ async fn run_docker_discovery() -> Result<Vec<DockerContainer>, String> {
             let parts: Vec<&str> = line.splitn(4, '\t').collect();
             if parts.len() >= 4 {
                 Some(DockerContainer {
-                    id: parts[0].to_string(),
-                    name: parts[1].to_string(),
-                    image: parts[2].to_string(),
-                    status: parts[3].to_string(),
+                    id: sanitize(parts[0]),
+                    name: sanitize(parts[1]),
+                    image: sanitize(parts[2]),
+                    status: sanitize(parts[3]),
                 })
             } else {
                 None
@@ -89,7 +91,7 @@ async fn run_azure_discovery() -> Result<Vec<AzureContainerApp>, String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("az containerapp list failed: {}", stderr.trim()));
+        return Err(format!("az containerapp list failed: {}", sanitize(stderr.trim())));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -101,12 +103,12 @@ async fn run_azure_discovery() -> Result<Vec<AzureContainerApp>, String> {
         .unwrap_or(&vec![])
         .iter()
         .filter_map(|item| {
-            let name = item.get("name")?.as_str()?.to_string();
+            let name = sanitize(item.get("name")?.as_str()?);
             let rg = item
                 .get("resourceGroup")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                .map(sanitize)
+                .unwrap_or_default();
             // Parse subscription ID from resource id:
             // /subscriptions/{sub}/resourceGroups/{rg}/providers/...
             let sub = item
@@ -115,15 +117,15 @@ async fn run_azure_discovery() -> Result<Vec<AzureContainerApp>, String> {
                 .and_then(|id| {
                     let parts: Vec<&str> = id.split('/').collect();
                     // /subscriptions/{sub}/...  → parts[2]
-                    parts.get(2).map(|s| s.to_string())
+                    parts.get(2).map(|s| sanitize(s))
                 })
                 .unwrap_or_default();
             let state = item
                 .get("properties")
                 .and_then(|p| p.get("provisioningState"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("Unknown")
-                .to_string();
+                .map(sanitize)
+                .unwrap_or_else(|| "Unknown".to_string());
             Some(AzureContainerApp {
                 name,
                 resource_group: rg,
@@ -155,7 +157,7 @@ async fn fetch_azure_token() -> Result<String, String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("az token failed: {}", stderr.trim()));
+        return Err(format!("az token failed: {}", sanitize(stderr.trim())));
     }
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout)

@@ -280,7 +280,9 @@ fn parse_json(line: &str) -> Option<Structured> {
     let message = JSON_MSG_KEYS
         .iter()
         .filter_map(|k| obj.get(*k))
-        .find_map(|v| v.as_str().map(|s| s.trim_end().to_string()));
+        // JSON can encode control characters (\u001b...) that only appear once
+        // decoded, so the message is sanitized again after parsing.
+        .find_map(|v| v.as_str().map(|s| crate::util::sanitize(s).trim_end().to_string()));
     Some(Structured { level, message })
 }
 
@@ -298,7 +300,7 @@ fn parse_logfmt(line: &str) -> Option<Structured> {
 }
 
 pub fn parse_line(source: &str, line: &str) -> LogEvent {
-    let clean = crate::util::strip_ansi(line);
+    let clean = crate::util::sanitize(line);
     let structured = parse_json(&clean).or_else(|| parse_logfmt(&clean));
     let (level, normalized) = match structured {
         Some(st) => {
@@ -665,5 +667,42 @@ mod tests {
         );
         assert_eq!(ev.level, Level::Error);
         assert_eq!(ev.normalized, "payment failed for order <NUM>");
+    }
+
+    fn has_control(s: &str) -> bool {
+        s.chars().any(|c| c.is_control())
+    }
+
+    /// Log content is attacker-influenced (e.g. a logged user-agent). Terminal
+    /// control characters in it must never reach the screen, or a log line can
+    /// set the window title, write the clipboard (OSC 52) or redraw the UI.
+    #[test]
+    fn json_message_escapes_cannot_inject_terminal_controls() {
+        let ev = parse_line(
+            "s",
+            r#"{"level":"info","msg":"login for ]52;c;cHduZWQ= ]0;owned 2J"}"#,
+        );
+        assert!(!has_control(&ev.normalized), "normalized: {:?}", ev.normalized);
+        assert!(!has_control(&ev.raw), "raw: {:?}", ev.raw);
+    }
+
+    #[test]
+    fn raw_line_terminal_controls_are_removed() {
+        for line in [
+            "a \x1b[?1049l b",          // private-mode CSI (not matched by the SGR regex)
+            "a \x1b]0;title b",         // unterminated OSC
+            "a \u{9b}2J b",             // 8-bit CSI
+            "a \u{9d}0;title\u{7} b",  // 8-bit OSC
+            "progress\r\x08\x08done", // carriage return / backspace overwrite
+        ] {
+            let ev = parse_line("s", line);
+            assert!(!has_control(&ev.raw), "{:?} -> raw {:?}", line, ev.raw);
+            assert!(!has_control(&ev.normalized), "{:?} -> normalized {:?}", line, ev.normalized);
+        }
+    }
+
+    #[test]
+    fn tabs_become_spaces() {
+        assert_eq!(parse_line("s", "a\tb").raw, "a b");
     }
 }
