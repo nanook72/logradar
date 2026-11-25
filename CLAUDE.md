@@ -53,3 +53,6 @@ The main event loop in `main.rs::run_tui` is synchronous on the main thread: it 
 - All child processes use `kill_on_drop(true)` — aborting a task handle kills the process cleanly
 - Config merges custom profiles into built-ins; using a built-in name overrides it
 - ANSI escape codes are stripped before normalization/clustering to avoid pattern pollution
+- Log content is attacker-controlled: everything drawn from a source goes through `util::sanitize` (all ANSI sequences, control chars and invisible/bidi format chars removed). JSON messages are sanitized again after decoding, since `\u001b` only becomes ESC then
+- `ingest::forward_lines` is the one line reader for every source: lines capped at `MAX_LINE_BYTES` (64 KiB), lossy UTF-8 so a bad byte can't end a stream; stored samples/signatures are capped again at `parse::MAX_STORED_BYTES` (4 KiB)
+- Bearer tokens never go on a command line: curl gets them as a config file on stdin (`-K -`); URL parts from Azure are validated before use

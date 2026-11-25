@@ -403,10 +403,8 @@ async fn run_azure_cli(
             "containerapp",
             "logs",
             "show",
-            "-n",
-            app_name,
-            "-g",
-            resource_group,
+            &format!("--name={}", app_name),
+            &format!("--resource-group={}", resource_group),
             "--type",
             "console",
             "--follow",
@@ -631,23 +629,6 @@ mod security_tests {
         assert_eq!(lines[1], "next");
     }
 
-    /// Bearer tokens must never be passed on curl's command line, where any
-    /// local user can read them from `ps` or /proc/<pid>/cmdline.
-    #[test]
-    fn curl_token_not_in_argv() {
-        let cmd = curl_command(&["-sf"], "https://example.invalid/x");
-        let argv: Vec<String> = cmd
-            .as_std()
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            argv.iter().all(|a| !a.contains("SECRET-TOKEN")),
-            "token in argv: {:?}",
-            argv
-        );
-    }
-
     #[test]
     fn curl_config_carries_header_and_cannot_add_lines() {
         assert_eq!(
@@ -660,32 +641,51 @@ mod security_tests {
         assert_eq!(cfg, "header = \"Authorization: Bearer x\\\"url = \\\"http://evil\\\\\"\n");
     }
 
-    /// curl really sends the header it read from stdin (skipped without curl).
+    /// Bearer tokens must never be on curl's command line, where any local
+    /// user can read them from `ps` or /proc/<pid>/cmdline; yet curl must still
+    /// send them. Checks the live process, so it fails however the token gets
+    /// into argv. Skipped without curl.
     #[tokio::test]
-    async fn curl_sends_header_from_stdin_config() {
+    async fn curl_token_reaches_server_but_not_argv() {
         use tokio::io::AsyncReadExt;
         if std::process::Command::new("curl").arg("--version").output().is_err() {
             eprintln!("curl not installed; skipping");
             return;
         }
+        let token = "probe-token-7f3a";
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/probe", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
+        let (got_req_tx, got_req_rx) = tokio::sync::oneshot::channel::<String>();
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
             let mut req = vec![0u8; 4096];
             let n = sock.read(&mut req).await.unwrap();
-            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}").await.unwrap();
-            String::from_utf8_lossy(&req[..n]).into_owned()
+            let _ = got_req_tx.send(String::from_utf8_lossy(&req[..n]).into_owned());
+            // Hold the response so curl is still running while argv is read.
+            let _ = reply_rx.await;
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}").await;
         });
+
         let mut cmd = curl_command(&["-sf", "--noproxy", "*"], &url);
         cmd.stdout(std::process::Stdio::piped());
-        let child = spawn_curl(cmd, "Authorization: Bearer probe-token").await.unwrap();
-        // The token is not on the command line of the running process...
-        let out = child.wait_with_output().await.unwrap();
-        assert!(out.status.success());
-        // ...but does reach the server.
-        let request = server.await.unwrap();
-        assert!(request.contains("Authorization: Bearer probe-token"), "{}", request);
+        let child = spawn_curl(cmd, &format!("Authorization: Bearer {}", token)).await.unwrap();
+
+        let request = got_req_rx.await.unwrap();
+        assert!(request.contains(&format!("Authorization: Bearer {}", token)), "{}", request);
+
+        if let Some(pid) = child.id() {
+            if let Ok(cmdline) = std::fs::read(format!("/proc/{}/cmdline", pid)) {
+                let argv = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+                assert!(argv.contains("curl"), "unexpected process: {}", argv);
+                assert!(!argv.contains(token), "token in argv: {}", argv);
+            }
+            if let Ok(environ) = std::fs::read(format!("/proc/{}/environ", pid)) {
+                assert!(!String::from_utf8_lossy(&environ).contains(token), "token in environment");
+            }
+        }
+        let _ = reply_tx.send(());
+        assert!(child.wait_with_output().await.unwrap().status.success());
     }
 
     #[test]

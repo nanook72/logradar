@@ -299,6 +299,11 @@ fn parse_logfmt(line: &str) -> Option<Structured> {
     Some(Structured { level, message })
 }
 
+/// Longest raw sample or signature kept per event. Every pattern stores its
+/// signature and up to 10 samples, so this bounds memory and keeps fuzzy
+/// search fast even when a source sends many long, unique lines.
+pub const MAX_STORED_BYTES: usize = 4096;
+
 pub fn parse_line(source: &str, line: &str) -> LogEvent {
     let clean = crate::util::sanitize(line);
     let structured = parse_json(&clean).or_else(|| parse_logfmt(&clean));
@@ -310,19 +315,33 @@ pub fn parse_line(source: &str, line: &str) -> LogEvent {
             // Cluster on the message alone, so request ids, timings and other
             // fields that vary per line don't split one pattern into many.
             let normalized = match st.message {
-                Some(m) if !m.is_empty() => normalize(&m),
-                _ => normalize(&clean),
+                Some(mut m) if !m.is_empty() => {
+                    crate::util::truncate(&mut m, MAX_STORED_BYTES);
+                    normalize(&m)
+                }
+                _ => normalize(&bounded(&clean)),
             };
             (level, normalized)
         }
-        None => (detect_level(&clean), normalize(&clean)),
+        None => (detect_level(&clean), normalize(&bounded(&clean))),
     };
+    // Normalizing can lengthen text (`1` -> `<NUM>`), so cut both again.
+    let mut raw = clean;
+    crate::util::truncate(&mut raw, MAX_STORED_BYTES);
+    let mut normalized = normalized;
+    crate::util::truncate(&mut normalized, MAX_STORED_BYTES);
     LogEvent {
         level,
         source: source.to_string(),
-        raw: clean,
+        raw,
         normalized,
     }
+}
+
+fn bounded(s: &str) -> String {
+    let mut s = s.to_string();
+    crate::util::truncate(&mut s, MAX_STORED_BYTES);
+    s
 }
 
 #[cfg(test)]
@@ -704,5 +723,28 @@ mod tests {
     #[test]
     fn tabs_become_spaces() {
         assert_eq!(parse_line("s", "a\tb").raw, "a b");
+    }
+
+    /// Whatever a source sends, what is stored per event stays small: with
+    /// 5000 patterns x 10 samples, 64 KiB lines would mean gigabytes.
+    #[test]
+    fn stored_text_is_bounded() {
+        let long = "word 1 ".repeat(20_000); // ~140 KB, and normalize grows digits
+        let ev = parse_line("s", &long);
+        assert!(ev.raw.len() <= 4096 + 32, "raw {} bytes", ev.raw.len());
+        assert!(ev.normalized.len() <= 4096 + 32, "normalized {} bytes", ev.normalized.len());
+        let json = format!(r#"{{"level":"info","msg":"{}"}}"#, "x 1 ".repeat(20_000));
+        let ev = parse_line("s", &json);
+        assert!(ev.raw.len() <= 4096 + 32, "raw {} bytes", ev.raw.len());
+        assert!(ev.normalized.len() <= 4096 + 32, "normalized {} bytes", ev.normalized.len());
+    }
+
+    #[test]
+    fn invisible_format_characters_are_removed() {
+        let ev = parse_line(
+            "s",
+            "ad\u{200B}min\u{FEFF} lo\u{00AD}gin\u{2060}\u{061C}\u{2028}x\u{E0041}\u{180E}",
+        );
+        assert_eq!(ev.raw, "admin loginx");
     }
 }
