@@ -13,6 +13,54 @@ pub struct Config {
     pub default_profile: Option<String>,
     #[serde(default)]
     pub profiles: std::collections::HashMap<String, ProfileConfig>,
+    #[serde(default)]
+    pub clustering: ClusteringConfig,
+}
+
+/// `[clustering]`: how lines are grouped into patterns.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ClusteringConfig {
+    /// "drain" (default): lines differing in a few words share a `<*>`
+    /// template. "exact": only identical normalized lines are grouped.
+    #[serde(default = "default_clustering_mode")]
+    pub mode: String,
+    /// Drain: share of tokens (0.0-1.0) that must match to join a template.
+    #[serde(default = "default_similarity")]
+    pub similarity: f64,
+}
+
+impl Default for ClusteringConfig {
+    fn default() -> Self {
+        ClusteringConfig {
+            mode: default_clustering_mode(),
+            similarity: default_similarity(),
+        }
+    }
+}
+
+fn default_clustering_mode() -> String {
+    "drain".into()
+}
+
+fn default_similarity() -> f64 {
+    crate::pattern::drain::DEFAULT_SIMILARITY
+}
+
+impl ClusteringConfig {
+    pub fn to_clustering(&self) -> Result<crate::pattern::Clustering> {
+        use crate::pattern::Clustering;
+        match self.mode.to_ascii_lowercase().as_str() {
+            "exact" => Ok(Clustering::Exact),
+            "drain" => {
+                if !(0.0..=1.0).contains(&self.similarity) {
+                    anyhow::bail!("clustering.similarity must be between 0.0 and 1.0");
+                }
+                Ok(Clustering::Drain { similarity: self.similarity })
+            }
+            other => anyhow::bail!("unknown clustering.mode '{}' (use \"drain\" or \"exact\")", other),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,5 +228,21 @@ highlights = ["critical"]
         let cfg = Config::load(None).unwrap();
         assert!(cfg.default_profile.is_none());
         assert!(cfg.profiles.is_empty());
+    }
+
+    #[test]
+    fn clustering_config() {
+        use crate::pattern::Clustering;
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.clustering.to_clustering().unwrap(), Clustering::default());
+        let cfg: Config = toml::from_str("[clustering]\nmode = \"exact\"").unwrap();
+        assert_eq!(cfg.clustering.to_clustering().unwrap(), Clustering::Exact);
+        let cfg: Config = toml::from_str("[clustering]\nsimilarity = 0.8").unwrap();
+        assert_eq!(cfg.clustering.to_clustering().unwrap(), Clustering::Drain { similarity: 0.8 });
+        let cfg: Config = toml::from_str("[clustering]\nsimilarity = 1.5").unwrap();
+        assert!(cfg.clustering.to_clustering().is_err());
+        let cfg: Config = toml::from_str("[clustering]\nmode = \"fuzzy\"").unwrap();
+        assert!(cfg.clustering.to_clustering().is_err());
+        assert!(toml::from_str::<Config>("[clustering]\nsimilarty = 0.8").is_err());
     }
 }

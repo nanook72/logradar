@@ -11,7 +11,7 @@ A modern, colorful, high-performance log analysis TUI built in Rust. Streams log
 
 - **Multi-source streaming** — Docker containers, Azure Container Apps, shell commands, file tailing
 - **Interactive source menu** — Press `a` to discover and add sources at runtime
-- **Automatic pattern clustering** — Groups log lines by normalized signature (ANSI-stripped); keeps up to 5,000 patterns, dropping the least recently seen
+- **Template clustering (Drain)** — Lines that differ only in a few words share a template: `user alice logged in` + `user bob logged in` → `user <*> logged in`. Typically cuts the pattern count 5-10× on real logs. Use `--exact` to group only identical lines; keeps up to 5,000 patterns, dropping the least recently seen
 - **Structured logs** — JSON (pino, bunyan, zap, Serilog, ECS…) and logfmt lines are clustered on their message field, with the level read from `level`/`severity`
 - **Activity sparklines** — Per-pattern 2-minute history (24 buckets x 5s) using Unicode block characters
 - **Rolling metrics** — 1-minute and 5-minute rate windows with color-coded trend indicators
@@ -102,6 +102,16 @@ min_level = "DEBUG"
 theme = "color"
 highlights = ["panic", "timeout", "oom"]
 ```
+
+### Clustering
+
+```toml
+[clustering]
+mode = "drain"      # or "exact": group only identical lines (same as --exact)
+similarity = 0.6    # share of words that must match to join a template (0.0-1.0)
+```
+
+Raise `similarity` if unrelated lines are merged; lower it to merge more aggressively. Lines at different levels are never merged.
 
 Custom profiles are added alongside the built-ins. To override a built-in, use its name (e.g., `[profiles.default]`).
 

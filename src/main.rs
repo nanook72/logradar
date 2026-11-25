@@ -11,7 +11,7 @@ mod tui;
 mod util;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use crossterm::{
     event::{self, Event, KeyCode},
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
@@ -29,38 +29,65 @@ struct Cli {
     command: Commands,
 }
 
+/// Where logs come from. Shared by every subcommand that reads logs.
+#[derive(Args, Debug, Default)]
+struct SourceArgs {
+    /// Docker container to tail
+    #[arg(long)]
+    docker: Vec<String>,
+
+    /// Shell command to stream
+    #[arg(long)]
+    cmd: Vec<String>,
+
+    /// File path to tail
+    #[arg(long)]
+    file: Vec<String>,
+}
+
+impl SourceArgs {
+    fn is_empty(&self) -> bool {
+        self.docker.is_empty() && self.cmd.is_empty() && self.file.is_empty()
+    }
+}
+
+/// How logs are parsed and grouped. Shared by every subcommand that reads logs.
+#[derive(Args, Debug, Default)]
+struct AnalysisArgs {
+    /// Path to config file (default: ./logradar.toml or ~/.config/logradar/config.toml)
+    #[arg(long)]
+    config: Option<String>,
+
+    /// Group only identical lines (turn off Drain template clustering)
+    #[arg(long)]
+    exact: bool,
+}
+
+#[derive(Args, Debug)]
+struct TuiArgs {
+    #[command(flatten)]
+    sources: SourceArgs,
+
+    #[command(flatten)]
+    analysis: AnalysisArgs,
+
+    /// Profile name (default, ops, network, or custom)
+    #[arg(long)]
+    profile: Option<String>,
+
+    /// Theme name (matrix, nebula, frostbyte, ember, deepwave, signal, obsidian, notredame, mono)
+    #[arg(long)]
+    theme: Option<String>,
+
+    /// Disable ASCII banner header
+    #[arg(long)]
+    no_banner: bool,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Launch the TUI dashboard
-    Tui {
-        /// Profile name (default, ops, network, or custom)
-        #[arg(long)]
-        profile: Option<String>,
-
-        /// Docker container to tail
-        #[arg(long)]
-        docker: Vec<String>,
-
-        /// Shell command to stream
-        #[arg(long)]
-        cmd: Vec<String>,
-
-        /// File path to tail
-        #[arg(long)]
-        file: Vec<String>,
-
-        /// Path to config file (default: ./logradar.toml or ~/.config/logradar/config.toml)
-        #[arg(long)]
-        config: Option<String>,
-
-        /// Theme name (matrix, nebula, frostbyte, ember, deepwave, signal, obsidian, notredame, mono)
-        #[arg(long)]
-        theme: Option<String>,
-
-        /// Disable ASCII banner header
-        #[arg(long)]
-        no_banner: bool,
-    },
+    Tui(TuiArgs),
 }
 
 #[tokio::main]
@@ -68,38 +95,35 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Tui {
-            profile,
-            docker,
-            cmd,
-            file,
-            config: config_path,
-            theme: theme_name,
-            no_banner,
-        } => {
-            run_tui(profile, docker, cmd, file, config_path, theme_name, no_banner).await?;
+        Commands::Tui(args) => {
+            run_tui(args).await?;
         }
     }
 
     Ok(())
 }
 
-async fn run_tui(
-    profile: Option<String>,
-    dockers: Vec<String>,
-    cmds: Vec<String>,
-    files: Vec<String>,
-    config_path: Option<String>,
-    theme_name: Option<String>,
-    no_banner: bool,
-) -> Result<()> {
-    let cfg = config::Config::load(config_path.as_deref())?;
+async fn run_tui(args: TuiArgs) -> Result<()> {
+    let TuiArgs {
+        sources,
+        analysis,
+        profile,
+        theme: theme_name,
+        no_banner,
+    } = args;
+    let cfg = config::Config::load(analysis.config.as_deref())?;
+    let clustering = if analysis.exact {
+        pattern::Clustering::Exact
+    } else {
+        cfg.clustering.to_clustering()?
+    };
     let default_profile = cfg.default_profile.clone();
     let profiles = cfg.into_profiles();
 
     let profile_name = profile.or(default_profile);
     let mut app = app::App::with_profiles(profiles, profile_name.as_deref());
     app.show_banner = !no_banner;
+    app.store = pattern::PatternStore::with_options(clustering, pattern::MAX_PATTERNS);
 
     // Apply --theme override
     if let Some(ref name) = theme_name {
@@ -123,15 +147,14 @@ async fn run_tui(
     app.discovery_tx = Some(discovery_tx);
 
     // Spawn ingest sources from CLI
-    let has_cli_sources =
-        !dockers.is_empty() || !cmds.is_empty() || !files.is_empty();
-    for container in dockers {
+    let has_cli_sources = !sources.is_empty();
+    for container in sources.docker {
         app.add_docker_source(container);
     }
-    for cmd_str in cmds {
+    for cmd_str in sources.cmd {
         app.add_command_source(cmd_str);
     }
-    for path in files {
+    for path in sources.file {
         app.add_file_source(path);
     }
 

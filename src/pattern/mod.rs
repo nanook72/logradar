@@ -3,6 +3,27 @@ use std::time::{Duration, Instant};
 
 use crate::parse::{Level, LogEvent};
 
+pub mod drain;
+
+use drain::{ClusterId, Drain};
+
+/// How log lines are grouped into patterns.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Clustering {
+    /// Lines whose normalized text is identical form a pattern.
+    Exact,
+    /// Drain template mining: lines of the same shape that differ in a few
+    /// words share a template with `<*>` wildcards. `similarity` is the share
+    /// of tokens that must match (0.0-1.0).
+    Drain { similarity: f64 },
+}
+
+impl Default for Clustering {
+    fn default() -> Self {
+        Clustering::Drain { similarity: drain::DEFAULT_SIMILARITY }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trend {
     Up,
@@ -32,6 +53,8 @@ pub struct Pattern {
     pub trend: Trend,
     pub spike: bool,
     pub sources: HashSet<String>,
+    /// The Drain cluster behind this pattern, when clustering with Drain.
+    pub cluster: Option<ClusterId>,
     /// Completed sparkline buckets (each = events in one SPARKLINE_BUCKET_SECS window).
     pub sparkline_buckets: VecDeque<u16>,
     /// In-progress bucket count (not yet committed to sparkline_buckets).
@@ -74,6 +97,7 @@ impl Pattern {
             trend: Trend::Stable,
             spike: false,
             sources,
+            cluster: None,
             sparkline_buckets,
             current_bucket_count: 1,
             sparkline_last_advance: now,
@@ -165,6 +189,8 @@ impl Pattern {
 pub struct PatternStore {
     patterns: Vec<Pattern>,
     index: HashMap<String, usize>,
+    drain: Option<Drain>,
+    by_cluster: HashMap<ClusterId, usize>,
     /// When counting started (store creation or the last clear/reset).
     origin: Instant,
     max_patterns: usize,
@@ -173,13 +199,23 @@ pub struct PatternStore {
 
 impl PatternStore {
     pub fn new() -> Self {
-        Self::with_capacity_limit(MAX_PATTERNS)
+        Self::with_options(Clustering::default(), MAX_PATTERNS)
     }
 
+    #[cfg(test)]
     pub fn with_capacity_limit(max_patterns: usize) -> Self {
+        Self::with_options(Clustering::Exact, max_patterns)
+    }
+
+    pub fn with_options(clustering: Clustering, max_patterns: usize) -> Self {
         PatternStore {
             patterns: Vec::new(),
             index: HashMap::new(),
+            drain: match clustering {
+                Clustering::Exact => None,
+                Clustering::Drain { similarity } => Some(Drain::new(similarity)),
+            },
+            by_cluster: HashMap::new(),
             origin: Instant::now(),
             max_patterns: max_patterns.max(1),
             evicted: 0,
@@ -188,22 +224,53 @@ impl PatternStore {
 
     pub fn ingest(&mut self, event: &LogEvent) {
         let now = Instant::now();
-        if let Some(&idx) = self.index.get(event.normalized.as_str()) {
-            self.patterns[idx].record(event.raw.clone(), event.level, &event.source, now);
-        } else {
-            if self.patterns.len() >= self.max_patterns {
-                self.evict_stalest();
+        let existing = match self.drain.as_mut() {
+            Some(drain) => {
+                let m = drain.add(event.level, &event.normalized);
+                match self.by_cluster.get(&m.id) {
+                    Some(&idx) => {
+                        if m.changed {
+                            self.patterns[idx].canonical = m.template;
+                        }
+                        Ok(idx)
+                    }
+                    None => Err((m.template, Some(m.id))),
+                }
             }
-            let idx = self.patterns.len();
-            self.patterns.push(Pattern::new(
-                event.normalized.clone(),
-                event.level,
-                event.raw.clone(),
-                event.source.clone(),
-                now,
-            ));
-            self.patterns[idx].observed_5m = now.duration_since(self.origin).min(WINDOW_5M);
-            self.index.insert(event.normalized.clone(), idx);
+            None => match self.index.get(event.normalized.as_str()) {
+                Some(&idx) => Ok(idx),
+                None => Err((event.normalized.clone(), None)),
+            },
+        };
+
+        match existing {
+            Ok(idx) => {
+                self.patterns[idx].record(event.raw.clone(), event.level, &event.source, now);
+            }
+            Err((canonical, cluster)) => {
+                if self.patterns.len() >= self.max_patterns {
+                    self.evict_stalest();
+                }
+                let idx = self.patterns.len();
+                let mut pattern = Pattern::new(
+                    canonical,
+                    event.level,
+                    event.raw.clone(),
+                    event.source.clone(),
+                    now,
+                );
+                pattern.observed_5m = now.duration_since(self.origin).min(WINDOW_5M);
+                pattern.cluster = cluster;
+                match cluster {
+                    Some(id) => {
+                        self.by_cluster.insert(id, idx);
+                    }
+                    None => {
+                        self.index.insert(pattern.canonical.clone(), idx);
+                    }
+                }
+                self.patterns.push(pattern);
+            }
         }
     }
 
@@ -219,9 +286,22 @@ impl PatternStore {
             return;
         };
         let removed = self.patterns.swap_remove(victim);
-        self.index.remove(&removed.canonical);
+        match removed.cluster {
+            Some(id) => {
+                self.by_cluster.remove(&id);
+                if let Some(drain) = self.drain.as_mut() {
+                    drain.remove(id);
+                }
+            }
+            None => {
+                self.index.remove(&removed.canonical);
+            }
+        }
         if let Some(moved) = self.patterns.get(victim) {
-            self.index.insert(moved.canonical.clone(), victim);
+            match moved.cluster {
+                Some(id) => self.by_cluster.insert(id, victim),
+                None => self.index.insert(moved.canonical.clone(), victim),
+            };
         }
         self.evicted += 1;
     }
@@ -276,6 +356,10 @@ impl PatternStore {
     pub fn reset(&mut self) {
         self.patterns.clear();
         self.index.clear();
+        self.by_cluster.clear();
+        if let Some(drain) = self.drain.as_mut() {
+            drain.clear();
+        }
         self.origin = Instant::now();
         self.evicted = 0;
     }
@@ -345,7 +429,7 @@ mod tests {
 
     #[test]
     fn level_escalates() {
-        let mut store = PatternStore::new();
+        let mut store = PatternStore::with_options(Clustering::Exact, MAX_PATTERNS);
         let ev1 = make_event("same", "info line", Level::Info);
         let ev2 = make_event("same", "error line", Level::Error);
         store.ingest(&ev1);
@@ -474,5 +558,84 @@ mod tests {
         let c = store.patterns().iter().find(|p| p.canonical == "c").unwrap();
         assert_eq!(c.count_total, 2);
         assert_eq!(store.len(), 3);
+    }
+
+    #[test]
+    fn drain_merges_lines_that_differ_in_a_word() {
+        let mut store = PatternStore::new();
+        for user in ["alice", "bob", "carol"] {
+            let line = format!("user {} logged in", user);
+            store.ingest(&make_event(&line, &line, Level::Info));
+        }
+        store.ingest(&make_event("cache warmed", "cache warmed", Level::Info));
+        assert_eq!(store.len(), 2);
+        let p = store.patterns().iter().find(|p| p.count_total == 3).unwrap();
+        assert_eq!(p.canonical, "user <*> logged in");
+        // Raw samples keep the real lines.
+        assert_eq!(p.samples.back().unwrap(), "user carol logged in");
+    }
+
+    #[test]
+    fn drain_keeps_levels_apart() {
+        let mut store = PatternStore::new();
+        store.ingest(&make_event("payment for order <NUM> ok", "a", Level::Info));
+        store.ingest(&make_event("payment for order <NUM> failed", "b", Level::Error));
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn drain_eviction_keeps_index_consistent() {
+        let mut store = PatternStore::with_options(Clustering::default(), 2);
+        for (i, line) in ["alpha one", "beta two words here", "gamma"].iter().enumerate() {
+            store.ingest(&make_event(line, line, Level::Info));
+            if i < 2 {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        assert_eq!(store.len(), 2);
+        assert_eq!(store.evicted(), 1);
+        // The survivors still receive their own lines.
+        store.ingest(&make_event("gamma", "gamma", Level::Info));
+        store.ingest(&make_event("beta two words here", "b", Level::Info));
+        for p in store.patterns() {
+            assert_eq!(p.count_total, 2, "{}", p.canonical);
+        }
+        // The evicted shape starts a fresh pattern.
+        store.ingest(&make_event("alpha one", "alpha one", Level::Info));
+        assert_eq!(store.len(), 2);
+        assert!(store.patterns().iter().any(|p| p.canonical == "alpha one" && p.count_total == 1));
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    /// `cargo test --release -- --ignored throughput --nocapture`
+    #[test]
+    #[ignore]
+    fn throughput() {
+        let path = std::env::var("LOGRADAR_BENCH_LOG").expect("set LOGRADAR_BENCH_LOG");
+        let text = std::fs::read_to_string(path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let events: Vec<LogEvent> = lines.iter().map(|l| crate::parse::parse_line("b", l)).collect();
+        for (name, mode) in [("exact", Clustering::Exact), ("drain", Clustering::default())] {
+            let mut store = PatternStore::with_options(mode, MAX_PATTERNS);
+            let start = Instant::now();
+            for _ in 0..100 {
+                for ev in &events {
+                    store.ingest(ev);
+                }
+            }
+            let n = events.len() * 100;
+            let secs = start.elapsed().as_secs_f64();
+            eprintln!("{name}: {} lines in {:.3}s = {:.0} lines/s, {} patterns", n, secs, n as f64 / secs, store.len());
+        }
+        let start = Instant::now();
+        for l in &lines {
+            std::hint::black_box(crate::parse::parse_line("b", l));
+        }
+        let secs = start.elapsed().as_secs_f64();
+        eprintln!("parse_line: {:.0} lines/s", lines.len() as f64 / secs);
     }
 }
