@@ -665,11 +665,19 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(
-                "│ {} patterns │ {} events │ ",
-                app.store.len(),
-                app.log_count,
-            ),
+            {
+                // Note when the pattern cap is dropping stale patterns.
+                let evicted = match app.store.evicted() {
+                    0 => String::new(),
+                    n => format!(" ({} dropped)", n),
+                };
+                format!(
+                    "│ {} patterns{} │ {} events │ ",
+                    app.store.len(),
+                    evicted,
+                    app.log_count,
+                )
+            },
             style,
         ),
         Span::styled(

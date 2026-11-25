@@ -11,14 +11,15 @@ A modern, colorful, high-performance log analysis TUI built in Rust. Streams log
 
 - **Multi-source streaming** — Docker containers, Azure Container Apps, shell commands, file tailing
 - **Interactive source menu** — Press `a` to discover and add sources at runtime
-- **Automatic pattern clustering** — Groups log lines by normalized signature (ANSI-stripped)
+- **Automatic pattern clustering** — Groups log lines by normalized signature (ANSI-stripped); keeps up to 5,000 patterns, dropping the least recently seen
+- **Structured logs** — JSON (pino, bunyan, zap, Serilog, ECS…) and logfmt lines are clustered on their message field, with the level read from `level`/`severity`
 - **Activity sparklines** — Per-pattern 2-minute history (24 buckets x 5s) using Unicode block characters
 - **Rolling metrics** — 1-minute and 5-minute rate windows with color-coded trend indicators
-- **Spike detection** — Flags patterns with anomalous rate increases (sparkline turns accent on spike)
+- **Spike detection** — Flags patterns whose 1-minute rate is over 3× their 5-minute average (sparkline turns accent on spike)
 - **Live source status** — Per-source status icons: `●` running, `◐` starting (animated), `✖` error, `○` stopped
 - **Fuzzy search** — Live pattern filtering with matched-character highlighting
 - **ASCII banner** — Matrix-inspired wordmark header with responsive layout (disable with `--no-banner`)
-- **Theme system** — Dracula, Matrix, and Mono themes; cycle with `t`
+- **Theme system** — nine themes (matrix, nebula, frostbyte, ember, deepwave, signal, obsidian, notredame, mono); cycle with `t` or pick with `--theme`
 - **Switchable profiles** — default, ops, network (live switching with `P`)
 - **Config file** — Custom profiles via `logradar.toml` or `~/.config/logradar/config.toml`
 - **3-pane layout** — Sources (grouped by provider), Patterns (with sparklines), Details
@@ -73,7 +74,7 @@ logradar tui --theme ember --docker my-container
 | `Esc`            | Exit search / help / picker  |
 | `a`              | Add source (interactive menu)|
 | `n`              | Toggle normalized / raw      |
-| `t`              | Cycle theme (color/matrix/mono)|
+| `t`              | Cycle theme                  |
 | `p`              | Pause / resume ingest        |
 | `P`              | Profile picker               |
 | `r`              | Reset all patterns           |

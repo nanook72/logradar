@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                       # dev build
 cargo build --release             # optimized build
-cargo test                        # run all 49 unit tests
+cargo test                        # run all unit tests
 cargo test parse::tests           # run tests for a single module
 cargo run -- tui --help           # show CLI help
 cargo run -- tui --cmd "command"  # launch TUI with a command source
@@ -28,7 +28,7 @@ The main event loop in `main.rs::run_tui` is synchronous on the main thread: it 
 - **`main.rs`** — Clap CLI definition, terminal setup/teardown, event loop, key handling
 - **`app.rs`** — Central `App` struct holding all state. Modes: Normal, Search, Drilldown, Help, ProfilePicker, SourceMenu. Panes: Sources, Patterns, Details. Source management with per-source handles (HashMap keyed by id).
 - **`config.rs`** — TOML config loading from `--config`, `./logradar.toml`, or `~/.config/logradar/config.toml`. Merges custom profiles with built-ins via `into_profiles()`.
-- **`parse/`** — `LogEvent` struct, level detection (case-insensitive string search), normalization (regex replacement chain: timestamps→UUIDs→IPs→hex→durations→numbers). Applies ANSI stripping before all processing.
+- **`parse/`** — `LogEvent` struct, structured JSON/logfmt parsing (clusters on the message field), level detection (explicit `[LEVEL]`/`level=` first, then case-insensitive whole-word search), normalization (regex replacement chain: timestamps→UUIDs→IPs→hex→durations→numbers). Applies ANSI stripping before all processing.
 - **`pattern/`** — `PatternStore` groups events by normalized string hash. `Pattern` tracks rolling window timestamps (VecDeque<Instant>), computes 1m/5m rates, trend direction, spike detection, sparkline history (24 buckets × 5s).
 - **`search/`** — Fuzzy search over pattern canonical strings using `fuzzy-matcher` SkimMatcherV2. Returns scored results with matched character indices for highlighting
 - **`ingest/`** — Spawns tokio tasks for docker, azure, command, file. Uses `SourceEvent` enum (`Log`/`Status` variants). Each source sends status updates (Starting→Running→Stopped/Error). All commands use `kill_on_drop(true)`.
@@ -41,7 +41,8 @@ The main event loop in `main.rs::run_tui` is synchronous on the main thread: it 
 
 ### Key Design Decisions
 
-- Pattern clustering uses hash of normalized string (not edit distance) for O(1) lookup
+- Pattern clustering keys a `HashMap<String, usize>` on the normalized string (not edit distance) for O(1) lookup; capped at `MAX_PATTERNS`, evicting the least recently seen
+- The 5m rate divides by the time actually observed (min 1m), so new sessions don't show false spikes
 - Rolling windows use `VecDeque<Instant>` pruned each tick — simple and allocation-free in steady state
 - Sparkline uses separate `current_bucket_count` (in-progress) committed to `sparkline_buckets` ring on 5s tick
 - No async in the TUI loop — crossterm polling + try_recv keeps it simple

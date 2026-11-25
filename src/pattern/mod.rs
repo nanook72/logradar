@@ -1,6 +1,4 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use crate::parse::{Level, LogEvent};
@@ -41,6 +39,9 @@ pub struct Pattern {
     sparkline_last_advance: Instant,
     timestamps_1m: VecDeque<Instant>,
     timestamps_5m: VecDeque<Instant>,
+    /// How much of the 5-minute window has actually been observed, so the
+    /// 5m rate isn't diluted while logradar has been running for less than 5m.
+    observed_5m: Duration,
 }
 
 const WINDOW_1M: Duration = Duration::from_secs(60);
@@ -48,6 +49,9 @@ const WINDOW_5M: Duration = Duration::from_secs(300);
 const MAX_SAMPLES: usize = 10;
 const SPARKLINE_BUCKET_SECS: u64 = 5;
 const SPARKLINE_BUCKET_COUNT: usize = 24;
+/// Most patterns kept at once; past this the least recently seen is dropped,
+/// so high-cardinality logs can't grow memory without bound.
+pub const MAX_PATTERNS: usize = 5000;
 
 impl Pattern {
     fn new(canonical: String, level: Level, raw: String, source: String, now: Instant) -> Self {
@@ -75,6 +79,7 @@ impl Pattern {
             sparkline_last_advance: now,
             timestamps_1m: ts1,
             timestamps_5m: ts5,
+            observed_5m: Duration::ZERO,
         }
     }
 
@@ -98,11 +103,15 @@ impl Pattern {
         self.timestamps_1m.len() as f64
     }
 
+    /// Events per minute averaged over the last 5 minutes, or over the time
+    /// observed so far (at least 1 minute) when that is shorter.
     pub fn rate_5m(&self) -> f64 {
-        self.timestamps_5m.len() as f64 / 5.0
+        let minutes = (self.observed_5m.as_secs_f64() / 60.0).clamp(1.0, 5.0);
+        self.timestamps_5m.len() as f64 / minutes
     }
 
-    fn prune_windows(&mut self, now: Instant) {
+    fn prune_windows(&mut self, now: Instant, origin: Instant) {
+        self.observed_5m = now.duration_since(origin).min(WINDOW_5M);
         while let Some(&front) = self.timestamps_1m.front() {
             if now.duration_since(front) > WINDOW_1M {
                 self.timestamps_1m.pop_front();
@@ -153,31 +162,38 @@ impl Pattern {
     }
 }
 
-fn hash_str(s: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    s.hash(&mut hasher);
-    hasher.finish()
-}
-
 pub struct PatternStore {
     patterns: Vec<Pattern>,
-    index: HashMap<u64, usize>,
+    index: HashMap<String, usize>,
+    /// When counting started (store creation or the last clear/reset).
+    origin: Instant,
+    max_patterns: usize,
+    evicted: u64,
 }
 
 impl PatternStore {
     pub fn new() -> Self {
+        Self::with_capacity_limit(MAX_PATTERNS)
+    }
+
+    pub fn with_capacity_limit(max_patterns: usize) -> Self {
         PatternStore {
             patterns: Vec::new(),
             index: HashMap::new(),
+            origin: Instant::now(),
+            max_patterns: max_patterns.max(1),
+            evicted: 0,
         }
     }
 
     pub fn ingest(&mut self, event: &LogEvent) {
         let now = Instant::now();
-        let hash = hash_str(&event.normalized);
-        if let Some(&idx) = self.index.get(&hash) {
+        if let Some(&idx) = self.index.get(event.normalized.as_str()) {
             self.patterns[idx].record(event.raw.clone(), event.level, &event.source, now);
         } else {
+            if self.patterns.len() >= self.max_patterns {
+                self.evict_stalest();
+            }
             let idx = self.patterns.len();
             self.patterns.push(Pattern::new(
                 event.normalized.clone(),
@@ -186,14 +202,40 @@ impl PatternStore {
                 event.source.clone(),
                 now,
             ));
-            self.index.insert(hash, idx);
+            self.patterns[idx].observed_5m = now.duration_since(self.origin).min(WINDOW_5M);
+            self.index.insert(event.normalized.clone(), idx);
         }
+    }
+
+    /// Drop the pattern seen least recently.
+    fn evict_stalest(&mut self) {
+        let Some(victim) = self
+            .patterns
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, p)| p.last_seen)
+            .map(|(i, _)| i)
+        else {
+            return;
+        };
+        let removed = self.patterns.swap_remove(victim);
+        self.index.remove(&removed.canonical);
+        if let Some(moved) = self.patterns.get(victim) {
+            self.index.insert(moved.canonical.clone(), victim);
+        }
+        self.evicted += 1;
+    }
+
+    /// How many patterns have been dropped to stay under the cap.
+    pub fn evicted(&self) -> u64 {
+        self.evicted
     }
 
     pub fn tick(&mut self) {
         let now = Instant::now();
+        let origin = self.origin;
         for p in &mut self.patterns {
-            p.prune_windows(now);
+            p.prune_windows(now, origin);
             p.update_trend();
         }
     }
@@ -217,6 +259,7 @@ impl PatternStore {
 
     pub fn clear_counters(&mut self) {
         let now = std::time::Instant::now();
+        self.origin = now;
         for p in &mut self.patterns {
             p.count_total = 0;
             p.timestamps_1m.clear();
@@ -226,12 +269,15 @@ impl PatternStore {
             p.sparkline_last_advance = now;
             p.trend = Trend::Stable;
             p.spike = false;
+            p.observed_5m = Duration::ZERO;
         }
     }
 
     pub fn reset(&mut self) {
         self.patterns.clear();
         self.index.clear();
+        self.origin = Instant::now();
+        self.evicted = 0;
     }
 
     pub fn len(&self) -> usize {
@@ -376,5 +422,57 @@ mod tests {
         assert!(p.canonical.contains("<TS>"));
         assert!(p.canonical.contains("<IP>"));
         assert!(p.canonical.contains("<DUR>"));
+    }
+
+    #[test]
+    fn no_false_spike_at_startup() {
+        let mut store = PatternStore::new();
+        for _ in 0..200 {
+            store.ingest(&make_event("burst <NUM>", "burst 1", Level::Info));
+        }
+        store.tick();
+        let p = &store.patterns()[0];
+        assert_eq!(p.rate_1m(), 200.0);
+        assert_eq!(p.rate_5m(), 200.0);
+        assert!(!p.spike);
+    }
+
+    #[test]
+    fn spike_detected_after_quiet_history() {
+        let mut store = PatternStore::new();
+        store.ingest(&make_event("x", "x", Level::Info));
+        let p = &mut store.patterns[0];
+        let now = Instant::now();
+        // Pretend 5 minutes were observed with 12 events in the last minute and
+        // 1 more spread over the earlier four.
+        p.observed_5m = WINDOW_5M;
+        for _ in 0..12 {
+            p.record("x".into(), Level::Info, "s", now);
+        }
+        p.update_trend();
+        assert!(p.spike, "1m={} 5m={}", p.rate_1m(), p.rate_5m());
+    }
+
+    #[test]
+    fn evicts_least_recently_seen_at_cap() {
+        let mut store = PatternStore::with_capacity_limit(3);
+        for name in ["a", "b", "c"] {
+            store.ingest(&make_event(name, name, Level::Info));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // Touch "a" so "b" becomes the stalest.
+        store.ingest(&make_event("a", "a", Level::Info));
+        std::thread::sleep(Duration::from_millis(2));
+        store.ingest(&make_event("d", "d", Level::Info));
+
+        assert_eq!(store.len(), 3);
+        assert_eq!(store.evicted(), 1);
+        let names: HashSet<&str> = store.patterns().iter().map(|p| p.canonical.as_str()).collect();
+        assert_eq!(names, HashSet::from(["a", "c", "d"]));
+        // Index still points at the right rows after the swap_remove.
+        store.ingest(&make_event("c", "c", Level::Info));
+        let c = store.patterns().iter().find(|p| p.canonical == "c").unwrap();
+        assert_eq!(c.count_total, 2);
+        assert_eq!(store.len(), 3);
     }
 }
