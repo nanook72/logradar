@@ -86,32 +86,23 @@ static UUID_RE: Lazy<Regex> = Lazy::new(|| {
         .unwrap()
 });
 
-static IP_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b").unwrap()
-});
+static IP_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b").unwrap());
 
-static HEX_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b0x[0-9a-fA-F]+\b").unwrap()
-});
+static HEX_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b0x[0-9a-fA-F]+\b").unwrap());
 
-static DUR_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b\d+(\.\d+)?\s?(ms|s|us|µs|ns)\b").unwrap()
-});
+static DUR_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b\d+(\.\d+)?\s?(ms|s|us|µs|ns)\b").unwrap());
 
 // Bracketed PID: [12345] — common in Postgres, nginx, syslog
-static PID_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\[\d+\]").unwrap()
-});
+static PID_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[\d+\]").unwrap());
 
-static NUM_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b\d+(\.\d+)?\b").unwrap()
-});
+static NUM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d+(\.\d+)?\b").unwrap());
 
 // Redis log format: "PID:X DD Mon YYYY HH:MM:SS.mmm <level_char> message"
 // Level chars: # = warning, * = notice/info, - = verbose/info, . = debug
-static REDIS_LEVEL: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^\d+:[A-Z]\s+.+\s([#*.\-])\s").unwrap()
-});
+static REDIS_LEVEL: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\d+:[A-Z]\s+.+\s([#*.\-])\s").unwrap());
 
 pub fn detect_level(line: &str) -> Level {
     // Check Redis format first (PID:ROLE ... <char> message)
@@ -136,10 +127,7 @@ pub fn detect_level(line: &str) -> Level {
         || upper.contains("HINT:")
     {
         Level::Info
-    } else if upper.contains("DEBUG")
-        || upper.contains("STATEMENT:")
-        || upper.contains("DETAIL:")
-    {
+    } else if upper.contains("DEBUG") || upper.contains("STATEMENT:") || upper.contains("DETAIL:") {
         Level::Debug
     } else if upper.contains("TRACE") {
         Level::Trace
@@ -154,12 +142,36 @@ pub fn detect_level(line: &str) -> Level {
 fn is_sql_fragment(upper: &str) -> bool {
     let trimmed = upper.trim_start();
     const SQL_KEYWORDS: &[&str] = &[
-        "SELECT ", "INSERT ", "UPDATE ", "DELETE ", "VALUES ", "SET ",
-        "WHERE ", "FROM ", "JOIN ", "LEFT ", "RIGHT ", "INNER ", "OUTER ",
-        "ON CONFLICT", "DO UPDATE", "DO NOTHING", "RETURNING ",
-        "ORDER BY", "GROUP BY", "HAVING ", "LIMIT ", "OFFSET ",
-        "CREATE ", "ALTER ", "DROP ", "EXCLUDED.", "INTO ",
-        ") VALUES", "$1", "CONFLICT (",
+        "SELECT ",
+        "INSERT ",
+        "UPDATE ",
+        "DELETE ",
+        "VALUES ",
+        "SET ",
+        "WHERE ",
+        "FROM ",
+        "JOIN ",
+        "LEFT ",
+        "RIGHT ",
+        "INNER ",
+        "OUTER ",
+        "ON CONFLICT",
+        "DO UPDATE",
+        "DO NOTHING",
+        "RETURNING ",
+        "ORDER BY",
+        "GROUP BY",
+        "HAVING ",
+        "LIMIT ",
+        "OFFSET ",
+        "CREATE ",
+        "ALTER ",
+        "DROP ",
+        "EXCLUDED.",
+        "INTO ",
+        ") VALUES",
+        "$1",
+        "CONFLICT (",
     ];
     SQL_KEYWORDS.iter().any(|kw| trimmed.contains(kw))
 }
@@ -233,7 +245,9 @@ mod tests {
     #[test]
     fn detect_level_redis_info() {
         assert_eq!(
-            detect_level("12345:M 20 Feb 2026 15:03:24.123 * Background saving terminated with success"),
+            detect_level(
+                "12345:M 20 Feb 2026 15:03:24.123 * Background saving terminated with success"
+            ),
             Level::Info
         );
     }
@@ -241,7 +255,9 @@ mod tests {
     #[test]
     fn detect_level_redis_warning() {
         assert_eq!(
-            detect_level("12345:M 20 Feb 2026 15:03:24.123 # WARNING overcommit_memory is set to 0"),
+            detect_level(
+                "12345:M 20 Feb 2026 15:03:24.123 # WARNING overcommit_memory is set to 0"
+            ),
             Level::Warn
         );
     }
@@ -288,18 +304,12 @@ mod tests {
 
     #[test]
     fn detect_level_sql_do_update() {
-        assert_eq!(
-            detect_level("            DO UPDATE SET"),
-            Level::Debug
-        );
+        assert_eq!(detect_level("            DO UPDATE SET"), Level::Debug);
     }
 
     #[test]
     fn detect_level_sql_returning() {
-        assert_eq!(
-            detect_level("            RETURNING id"),
-            Level::Debug
-        );
+        assert_eq!(detect_level("            RETURNING id"), Level::Debug);
     }
 
     #[test]
@@ -410,7 +420,10 @@ mod tests {
 
     #[test]
     fn parse_line_integrates() {
-        let ev = parse_line("test/src", "2025-01-01T00:00:00Z [ERROR] failed at 192.168.0.1");
+        let ev = parse_line(
+            "test/src",
+            "2025-01-01T00:00:00Z [ERROR] failed at 192.168.0.1",
+        );
         assert_eq!(ev.level, Level::Error);
         assert_eq!(ev.source, "test/src");
         assert!(ev.normalized.contains("<TS>"));

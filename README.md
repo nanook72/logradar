@@ -210,6 +210,7 @@ Select via `--theme <name>` or cycle at runtime with `t`:
 | `deepwave`  | Ocean analytics — teal, aqua, deep navy |
 | `signal`    | Minimalist professional — clean grays, subtle blue accent |
 | `obsidian`  | Ultra minimal — grayscale with strategic green accents |
+| `notredame` | Fighting Irish — navy, metallic gold, shamrock green |
 | `mono`      | Pure grayscale — no color, maximum readability |
 
 ## License

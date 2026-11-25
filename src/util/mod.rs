@@ -13,9 +13,8 @@ static ANSI_RE: Lazy<Regex> = Lazy::new(|| {
 
 /// Regex matching JSON-encoded ANSI escapes: literal text \u001b[...m or \u001B[...m
 /// These appear in Docker JSON log output where ESC is encoded as \u001b.
-static JSON_ANSI_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\\u001[bB]\[[0-9;]*[A-Za-z]").unwrap()
-});
+static JSON_ANSI_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\\u001[bB]\[[0-9;]*[A-Za-z]").unwrap());
 
 /// Strip ANSI escape codes from a string.
 /// Handles both real ESC bytes (\x1b) and JSON-encoded (\u001b) forms.
@@ -68,10 +67,7 @@ mod tests {
 
     #[test]
     fn strip_json_encoded_ansi() {
-        assert_eq!(
-            strip_ansi(r#"\u001b[31mERROR\u001b[0m"#),
-            "ERROR"
-        );
+        assert_eq!(strip_ansi(r#"\u001b[31mERROR\u001b[0m"#), "ERROR");
     }
 
     #[test]
@@ -84,9 +80,6 @@ mod tests {
 
     #[test]
     fn strip_json_encoded_uppercase_b() {
-        assert_eq!(
-            strip_ansi(r#"\u001B[1mBOLD\u001B[0m"#),
-            "BOLD"
-        );
+        assert_eq!(strip_ansi(r#"\u001B[1mBOLD\u001B[0m"#), "BOLD");
     }
 }

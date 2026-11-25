@@ -70,6 +70,7 @@ impl Theme {
             Self::deepwave(),
             Self::signal(),
             Self::obsidian(),
+            Self::notredame(),
             Self::mono(),
         ]
     }
@@ -77,7 +78,15 @@ impl Theme {
     /// All theme names in cycle order.
     pub fn all_names() -> Vec<&'static str> {
         vec![
-            "matrix", "nebula", "frostbyte", "ember", "deepwave", "signal", "obsidian", "mono",
+            "matrix",
+            "nebula",
+            "frostbyte",
+            "ember",
+            "deepwave",
+            "signal",
+            "obsidian",
+            "notredame",
+            "mono",
         ]
     }
 
@@ -91,6 +100,7 @@ impl Theme {
             "deepwave" => Some(Self::deepwave()),
             "signal" => Some(Self::signal()),
             "obsidian" => Some(Self::obsidian()),
+            "notredame" => Some(Self::notredame()),
             "mono" => Some(Self::mono()),
             _ => None,
         }
@@ -472,6 +482,59 @@ impl Theme {
             banner_accent: Color::Rgb(80, 210, 165),
             banner_tagline: Color::Rgb(80, 170, 140),
             banner_separator: Color::Rgb(50, 50, 55),
+        }
+    }
+
+    // ── notredame ──────────────────────────────────────────────────
+    // Mood: Fighting Irish — navy, metallic gold, shamrock green
+    pub fn notredame() -> Self {
+        Theme {
+            name: "notredame".into(),
+            border: Color::Rgb(40, 65, 110),
+            border_focused: Color::Rgb(212, 175, 55),
+            title: Color::Rgb(230, 195, 90),
+            selected_fg: Color::Rgb(12, 35, 64),
+            selected_bg: Color::Rgb(212, 175, 55),
+            error: Color::Rgb(255, 95, 95),
+            warn: Color::Rgb(240, 200, 70),
+            info: Color::Rgb(70, 200, 110),
+            debug: Color::Rgb(130, 160, 210),
+            trace: Color::Rgb(70, 95, 140),
+            accent: Color::Rgb(0, 170, 80),
+            badge: Color::Rgb(212, 175, 55),
+            status_bar_fg: Color::Rgb(230, 195, 90),
+            status_bar_bg: Color::Rgb(12, 35, 64),
+            fuzzy_match: Color::Rgb(90, 220, 130),
+            text: Color::Rgb(235, 232, 220),
+            text_dim: Color::Rgb(130, 145, 170),
+            bg: Color::Reset,
+            modal_border: Color::Rgb(212, 175, 55),
+            modal_bg: Color::Rgb(8, 24, 46),
+            modal_title: Color::Rgb(0, 170, 80),
+            header_bg: Color::Rgb(12, 35, 64),
+            header_fg: Color::Rgb(235, 232, 220),
+            header_accent: Color::Rgb(212, 175, 55),
+            rate_bar: Color::Rgb(0, 170, 80),
+            rate_bar_bg: Color::Rgb(20, 45, 80),
+            menu_hover: Color::Rgb(25, 55, 95),
+            divider: Color::Rgb(40, 65, 110),
+            success: Color::Rgb(0, 170, 80),
+            trend_up: Color::Rgb(70, 200, 110),
+            trend_down: Color::Rgb(255, 95, 95),
+            trend_stable: Color::Rgb(130, 145, 170),
+            badge_error_bg: Color::Rgb(95, 25, 30),
+            badge_warn_bg: Color::Rgb(95, 75, 15),
+            badge_info_bg: Color::Rgb(0, 70, 35),
+            badge_debug_bg: Color::Rgb(25, 50, 90),
+            count_hot: Color::Rgb(255, 95, 95),
+            count_warm: Color::Rgb(240, 200, 70),
+            count_cold: Color::Rgb(130, 145, 170),
+            sparkline: Color::Rgb(212, 175, 55),
+            sparkline_dim: Color::Rgb(110, 95, 45),
+            banner_primary: Color::Rgb(212, 175, 55),
+            banner_accent: Color::Rgb(0, 170, 80),
+            banner_tagline: Color::Rgb(235, 232, 220),
+            banner_separator: Color::Rgb(40, 65, 110),
         }
     }
 

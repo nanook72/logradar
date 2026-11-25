@@ -53,7 +53,7 @@ enum Commands {
         #[arg(long)]
         config: Option<String>,
 
-        /// Theme name (matrix, nebula, frostbyte, ember, deepwave, signal, obsidian, mono)
+        /// Theme name (matrix, nebula, frostbyte, ember, deepwave, signal, obsidian, notredame, mono)
         #[arg(long)]
         theme: Option<String>,
 
@@ -77,7 +77,16 @@ async fn main() -> Result<()> {
             theme: theme_name,
             no_banner,
         } => {
-            run_tui(profile, docker, cmd, file, config_path, theme_name, no_banner).await?;
+            run_tui(
+                profile,
+                docker,
+                cmd,
+                file,
+                config_path,
+                theme_name,
+                no_banner,
+            )
+            .await?;
         }
     }
 
@@ -123,8 +132,7 @@ async fn run_tui(
     app.discovery_tx = Some(discovery_tx);
 
     // Spawn ingest sources from CLI
-    let has_cli_sources =
-        !dockers.is_empty() || !cmds.is_empty() || !files.is_empty();
+    let has_cli_sources = !dockers.is_empty() || !cmds.is_empty() || !files.is_empty();
     for container in dockers {
         app.add_docker_source(container);
     }

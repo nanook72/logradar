@@ -35,7 +35,11 @@ pub fn discover_docker(tx: mpsc::Sender<DiscoveryResult>) {
 
 async fn run_docker_discovery() -> Result<Vec<DockerContainer>, String> {
     let output = Command::new("docker")
-        .args(["ps", "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}"])
+        .args([
+            "ps",
+            "--format",
+            "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
+        ])
         .output()
         .await
         .map_err(|e| format!("docker not found: {}", e))?;
@@ -158,8 +162,8 @@ async fn fetch_azure_token() -> Result<String, String> {
         return Err(format!("az token failed: {}", stderr.trim()));
     }
 
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("token parse: {}", e))?;
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("token parse: {}", e))?;
 
     json.get("accessToken")
         .and_then(|v| v.as_str())

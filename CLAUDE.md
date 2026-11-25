@@ -35,7 +35,7 @@ The main event loop in `main.rs::run_tui` is synchronous on the main thread: it 
 - **`discovery.rs`** — Async Docker (`docker ps`) and Azure (`az containerapp list`) auto-discovery.
 - **`tui/ui.rs`** — All ratatui rendering. Uses `Theme` for every color. 3-pane layout with header bar, sparkline column, severity badges, status icons with spinner animation.
 - **`tui/source_menu.rs`** — Source menu state: screens for Docker/Azure discovery (multi-select), file/command text input.
-- **`theme.rs`** — `Theme` struct with 40+ named color roles. Eight themes: matrix (default), nebula, frostbyte, ember, deepwave, signal, obsidian, mono. Cycle with `t`, select with `--theme <name>`. `Theme::by_name()` for lookup, `Theme::next()` for cycling. Banner colors: `banner_primary`, `banner_accent`, `banner_tagline`, `banner_separator`.
+- **`theme.rs`** — `Theme` struct with 40+ named color roles. Nine themes: matrix (default), nebula, frostbyte, ember, deepwave, signal, obsidian, notredame, mono. Cycle with `t`, select with `--theme <name>`. `Theme::by_name()` for lookup, `Theme::next()` for cycling. Banner colors: `banner_primary`, `banner_accent`, `banner_tagline`, `banner_separator`.
 - **`profile.rs`** — Profile definitions (default/ops/network) with min_level filter and highlight keywords
 - **`util/`** — ANSI escape code stripping via regex
 
