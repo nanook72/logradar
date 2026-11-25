@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Block, BorderType, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap},
     Frame,
 };
 
@@ -262,6 +262,15 @@ fn render_patterns(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     } else {
         format!("Patterns{} ({})", source_tag, app.filtered_view.len())
     };
+    // Sort order and level filter when they differ from the defaults.
+    let mut view = Vec::new();
+    if app.sort != crate::app::SortMode::Rate {
+        view.push(format!("by {}", app.sort.label()));
+    }
+    if app.level_filter.is_some() {
+        view.push(app.level_filter_label());
+    }
+    let title = if view.is_empty() { title } else { format!("{} · {}", title, view.join(" · ")) };
     let block = pane_block(&title, focused, theme);
     let inner = block.inner(area);
 
@@ -361,15 +370,18 @@ fn render_patterns(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             )));
 
             // Trend arrow with color coding
+            let is_new = p.first_seen.elapsed() < crate::app::NEW_FOR;
             let (trend_str, trend_color) = if p.spike {
                 ("↑↑".to_string(), theme.count_hot)
+            } else if is_new {
+                ("NEW".to_string(), theme.accent)
             } else {
                 (p.trend.symbol().to_string(), theme.trend_color(p.trend))
             };
             let trend_cell = Cell::from(Line::from(Span::styled(
                 trend_str,
                 Style::default().fg(trend_color).add_modifier(
-                    if p.spike { Modifier::BOLD } else { Modifier::empty() },
+                    if p.spike || is_new { Modifier::BOLD } else { Modifier::empty() },
                 ),
             )));
 
@@ -558,63 +570,99 @@ fn render_details(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     }
 }
 
+/// Local wall-clock time of a line, with milliseconds.
+fn clock_of(t: std::time::SystemTime) -> String {
+    jiff::Timestamp::try_from(t)
+        .map(|ts| ts.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime("%H:%M:%S%.3f").to_string())
+        .unwrap_or_default()
+}
+
 fn render_drilldown(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let block = pane_block("Drilldown - Samples", true, theme);
+    let lines = app.drill_lines();
+    let selected = app.drill_index(lines.len());
+    let title = match app.selected_pattern_data() {
+        Some(_) => format!(
+            "Drilldown · {} recent lines · {}",
+            lines.len(),
+            if app.drill_follow { "following (j/k to browse)" } else { "paused (G to follow)" }
+        ),
+        None => "Drilldown".to_string(),
+    };
+    let block = pane_block(&title, true, theme);
 
-    if let Some(pattern) = app.selected_pattern_data() {
-        let items: Vec<ListItem> = pattern
-            .samples
-            .iter()
-            .enumerate()
-            .map(|(i, sample)| {
-                let display = if app.show_normalized {
-                    pattern.canonical.clone()
-                } else {
-                    sample.clone()
-                };
-                let style = if i == app.detail_scroll {
-                    Style::default()
-                        .fg(theme.selected_fg)
-                        .bg(theme.selected_bg)
-                } else {
-                    Style::default().fg(theme.text)
-                };
-                ListItem::new(Line::from(Span::styled(display, style)))
-            })
-            .collect();
-
-        let list = List::new(items).block(block);
-        f.render_widget(list, area);
-    } else {
+    let Some(pattern) = app.selected_pattern_data() else {
         let p = Paragraph::new("No pattern selected")
             .block(block)
             .style(Style::default().fg(theme.text_dim));
         f.render_widget(p, area);
+        return;
+    };
+    if lines.is_empty() {
+        let p = Paragraph::new("No recent lines for this pattern (older lines have rolled off)")
+            .block(block)
+            .style(Style::default().fg(theme.text_dim));
+        f.render_widget(p, area);
+        return;
     }
+
+    let items: Vec<ListItem> = lines
+        .iter()
+        .map(|l| {
+            let text = if app.show_normalized { pattern.canonical.as_str() } else { l.raw.as_str() };
+            ListItem::new(Line::from(vec![
+                Span::styled(clock_of(l.at), Style::default().fg(theme.text_dim)),
+                Span::raw(" "),
+                Span::styled(text.to_string(), Style::default().fg(theme.text)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().fg(theme.selected_fg).bg(theme.selected_bg));
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_drilldown_detail(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let block = pane_block("Sample Detail", false, theme);
+    let block = pane_block("Line & context (same source)", false, theme);
+    let lines = app.drill_lines();
+    let Some(line) = lines.get(app.drill_index(lines.len())) else {
+        let p = Paragraph::new("No line selected")
+            .block(block)
+            .style(Style::default().fg(theme.text_dim));
+        f.render_widget(p, area);
+        return;
+    };
 
-    if let Some(pattern) = app.selected_pattern_data() {
-        if let Some(sample) = pattern.samples.get(app.detail_scroll) {
-            let display = if app.show_normalized {
-                pattern.canonical.clone()
-            } else {
-                sample.clone()
-            };
-            let paragraph = Paragraph::new(display)
-                .block(block)
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(theme.text));
-            f.render_widget(paragraph, area);
-            return;
-        }
+    let label = Style::default().fg(theme.text_dim);
+    let mut text = vec![
+        Line::from(vec![
+            Span::styled(clock_of(line.at), label),
+            Span::raw("  "),
+            Span::styled(format!("[{}]", line.level.short()), Style::default().fg(theme.level_color(line.level))),
+            Span::raw("  "),
+            Span::styled(line.source.clone(), label),
+        ]),
+        Line::from(Span::styled(line.raw.clone(), Style::default().fg(theme.text).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        Line::from(Span::styled("CONTEXT", label)),
+    ];
+    for c in app.store.context(line.seq, 5) {
+        let style = if c.seq == line.seq {
+            Style::default().fg(theme.selected_fg).bg(theme.selected_bg)
+        } else {
+            Style::default().fg(theme.level_color(c.level))
+        };
+        text.push(Line::from(vec![
+            Span::styled(clock_of(c.at), label),
+            Span::raw(" "),
+            Span::styled(c.raw.clone(), style),
+        ]));
     }
-
-    let p = Paragraph::new("No sample")
-        .block(block)
-        .style(Style::default().fg(theme.text_dim));
+    text.push(Line::from(""));
+    text.push(Line::from(Span::styled("y copy · Esc back", label)));
+    let p = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
     f.render_widget(p, area);
 }
 
@@ -707,8 +755,26 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     ];
 
     // A recent alert takes the place of the key hints for 30 seconds.
-    match &app.last_alert {
-        Some((at, text)) if at.elapsed() < std::time::Duration::from_secs(30) => {
+    let flash = app
+        .flash
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() < std::time::Duration::from_secs(6));
+    let alert = app
+        .last_alert
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() < std::time::Duration::from_secs(30));
+    match (flash, alert) {
+        (Some((fat, msg)), a) if a.is_none_or(|(aat, _)| fat >= aat) => {
+            spans.push(Span::styled("│ ", style));
+            spans.push(Span::styled(
+                format!("{} ", msg),
+                Style::default()
+                    .fg(theme.accent)
+                    .bg(theme.status_bar_bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        (_, Some((_, text))) => {
             spans.push(Span::styled("│ ", style));
             spans.push(Span::styled(
                 format!("⚑ {} ", text),
@@ -1254,7 +1320,11 @@ fn render_help(f: &mut Frame, area: Rect, theme: &Theme) {
         help_line("Esc", "Clear filter / exit overlay", theme),
         help_line("a", "Add source (interactive)", theme),
         help_line("n", "Toggle normalized / raw", theme),
-        help_line("t", "Toggle color / mono theme", theme),
+        help_line("s", "Sort: rate / count / level / newest", theme),
+        help_line("L", "Level filter: all / warn+ / errors", theme),
+        help_line("x / X", "Export view to Markdown / JSON", theme),
+        help_line("y", "Drilldown: copy line (j/k g/G PgUp/PgDn)", theme),
+        help_line("t", "Cycle theme", theme),
         help_line("p", "Pause / resume ingest", theme),
         help_line("r", "Reset all patterns", theme),
         help_line("c", "Clear counters", theme),

@@ -2,6 +2,7 @@ mod alert;
 mod app;
 mod config;
 mod discovery;
+mod export;
 mod headless;
 mod ingest;
 mod parse;
@@ -408,16 +409,34 @@ fn handle_key_event(app: &mut app::App, key: event::KeyEvent) {
                 app.detail_scroll = 0;
                 app.needs_clear = true;
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if app.detail_scroll > 0 {
-                    app.detail_scroll -= 1;
-                }
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::PageUp | KeyCode::Char('g') => {
+                let len = app.drill_lines().len();
+                let cur = app.drill_index(len);
+                app.detail_scroll = match key.code {
+                    KeyCode::PageUp => cur.saturating_sub(10),
+                    KeyCode::Char('g') => 0,
+                    _ => cur.saturating_sub(1),
+                };
+                app.drill_follow = false;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(p) = app.selected_pattern_data() {
-                    if app.detail_scroll + 1 < p.samples.len() {
-                        app.detail_scroll += 1;
-                    }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::PageDown => {
+                let len = app.drill_lines().len();
+                let cur = app.drill_index(len);
+                let step = if key.code == KeyCode::PageDown { 10 } else { 1 };
+                app.detail_scroll = (cur + step).min(len.saturating_sub(1));
+                // Moving onto the newest line resumes following.
+                app.drill_follow = app.detail_scroll + 1 >= len;
+            }
+            KeyCode::Char('G') | KeyCode::Char('f') => app.drill_follow = true,
+            KeyCode::Char('y') => {
+                let lines = app.drill_lines();
+                let line = lines.get(app.drill_index(lines.len())).map(|l| l.raw.clone());
+                match line {
+                    Some(text) => match export::copy_to_clipboard(&text) {
+                        Ok(()) => app.say("Copied line to clipboard (via terminal)"),
+                        Err(e) => app.say(format!("Copy failed: {}", e)),
+                    },
+                    None => app.say("Nothing to copy"),
                 }
             }
             KeyCode::Char('n') => app.show_normalized = !app.show_normalized,
@@ -456,6 +475,10 @@ fn handle_key_event(app: &mut app::App, key: event::KeyEvent) {
             app.needs_clear = true;
         }
         KeyCode::Char('n') => app.show_normalized = !app.show_normalized,
+        KeyCode::Char('s') => app.cycle_sort(),
+        KeyCode::Char('L') => app.cycle_level_filter(),
+        KeyCode::Char('x') => app.export("md"),
+        KeyCode::Char('X') => app.export("json"),
         KeyCode::Char('t') => app.toggle_theme(),
         KeyCode::Tab => app.next_pane(),
         KeyCode::BackTab => app.prev_pane(),
@@ -465,6 +488,7 @@ fn handle_key_event(app: &mut app::App, key: event::KeyEvent) {
             if app.active_pane == Pane::Patterns && app.selected_pattern_data().is_some() {
                 app.mode = AppMode::Drilldown;
                 app.detail_scroll = 0;
+                app.drill_follow = true;
                 app.needs_clear = true;
             } else if app.active_pane == Pane::Sources {
                 app.activate_selected_source();

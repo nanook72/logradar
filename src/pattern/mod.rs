@@ -74,6 +74,22 @@ const WINDOW_5M: Duration = Duration::from_secs(300);
 const MAX_SAMPLES: usize = 10;
 const SPARKLINE_BUCKET_SECS: u64 = 5;
 const SPARKLINE_BUCKET_COUNT: usize = 24;
+/// Most recent lines kept (across all patterns) for drill-down and context.
+/// Each is at most `parse::MAX_STORED_BYTES`, so this is ~40 MB at worst.
+pub const RECENT_LINES: usize = 10_000;
+
+/// One line as it arrived, for drill-down.
+#[derive(Debug, Clone)]
+pub struct RecentLine {
+    /// Arrival order; consecutive across the whole store.
+    pub seq: u64,
+    pub at: std::time::SystemTime,
+    pub source: String,
+    pub pattern_id: u64,
+    pub level: Level,
+    pub raw: String,
+}
+
 /// Most patterns kept at once; past this the least recently seen is dropped,
 /// so high-cardinality logs can't grow memory without bound.
 pub const MAX_PATTERNS: usize = 5000;
@@ -199,6 +215,8 @@ pub struct PatternStore {
     max_patterns: usize,
     evicted: u64,
     next_id: u64,
+    recent: VecDeque<RecentLine>,
+    next_seq: u64,
 }
 
 impl PatternStore {
@@ -224,6 +242,8 @@ impl PatternStore {
             max_patterns: max_patterns.max(1),
             evicted: 0,
             next_id: 0,
+            recent: VecDeque::new(),
+            next_seq: 0,
         }
     }
 
@@ -248,9 +268,10 @@ impl PatternStore {
             },
         };
 
-        match existing {
+        let pattern_id = match existing {
             Ok(idx) => {
                 self.patterns[idx].record(event.raw.clone(), event.level, &event.source, now);
+                self.patterns[idx].id
             }
             Err((canonical, cluster)) => {
                 if self.patterns.len() >= self.max_patterns {
@@ -276,9 +297,44 @@ impl PatternStore {
                         self.index.insert(pattern.canonical.clone(), idx);
                     }
                 }
+                let id = pattern.id;
                 self.patterns.push(pattern);
+                id
             }
+        };
+
+        if self.recent.len() >= RECENT_LINES {
+            self.recent.pop_front();
         }
+        self.recent.push_back(RecentLine {
+            seq: self.next_seq,
+            at: std::time::SystemTime::now(),
+            source: event.source.clone(),
+            pattern_id,
+            level: event.level,
+            raw: event.raw.clone(),
+        });
+        self.next_seq += 1;
+    }
+
+    /// Recent lines of one pattern, oldest first.
+    pub fn recent_lines(&self, pattern_id: u64) -> Vec<&RecentLine> {
+        self.recent.iter().filter(|l| l.pattern_id == pattern_id).collect()
+    }
+
+    /// Up to `n` lines from the same source before and after line `seq`
+    /// (any pattern), oldest first; the line itself is included.
+    pub fn context(&self, seq: u64, n: usize) -> Vec<&RecentLine> {
+        let Some(base) = self.recent.front().map(|l| l.seq) else {
+            return Vec::new();
+        };
+        let Some(pos) = seq.checked_sub(base).map(|p| p as usize).filter(|&p| p < self.recent.len()) else {
+            return Vec::new();
+        };
+        let source = &self.recent[pos].source;
+        let before: Vec<&RecentLine> = self.recent.range(..pos).rev().filter(|l| &l.source == source).take(n).collect();
+        let after = self.recent.range(pos + 1..).filter(|l| &l.source == source).take(n);
+        before.into_iter().rev().chain(std::iter::once(&self.recent[pos])).chain(after).collect()
     }
 
     /// Drop the pattern seen least recently.
@@ -369,6 +425,7 @@ impl PatternStore {
         self.patterns.clear();
         self.index.clear();
         self.by_cluster.clear();
+        self.recent.clear();
         if let Some(drain) = self.drain.as_mut() {
             drain.clear();
         }
@@ -616,6 +673,49 @@ mod tests {
         store.ingest(&make_event("alpha one", "alpha one", Level::Info));
         assert_eq!(store.len(), 2);
         assert!(store.patterns().iter().any(|p| p.canonical == "alpha one" && p.count_total == 1));
+    }
+
+    #[test]
+    fn recent_lines_and_context() {
+        let mut store = PatternStore::new();
+        let feed = [
+            ("a", "boot start"),
+            ("b", "other source noise"),
+            ("a", "[ERROR] db timeout"),
+            ("a", "retrying now"),
+            ("a", "[ERROR] db timeout"),
+            ("a", "gave up"),
+        ];
+        for (src, line) in feed {
+            let mut ev = make_event(line, line, Level::Info);
+            ev.source = src.into();
+            store.ingest(&ev);
+        }
+        let timeout_id = store.patterns().iter().find(|p| p.canonical.contains("timeout")).unwrap().id;
+        let lines = store.recent_lines(timeout_id);
+        assert_eq!(lines.len(), 2);
+        // Context of the first timeout: same source only, 1 each side.
+        let ctx: Vec<&str> = store.context(lines[0].seq, 1).iter().map(|l| l.raw.as_str()).collect();
+        assert_eq!(ctx, ["boot start", "[ERROR] db timeout", "retrying now"]);
+        let ctx: Vec<&str> = store.context(lines[1].seq, 5).iter().map(|l| l.raw.as_str()).collect();
+        assert_eq!(ctx.len(), 5);
+        assert!(!ctx.contains(&"other source noise"));
+        assert!(store.context(9999, 1).is_empty());
+    }
+
+    #[test]
+    fn recent_lines_are_bounded() {
+        let mut store = PatternStore::new();
+        for i in 0..(RECENT_LINES + 50) {
+            let line = format!("line {}", i);
+            store.ingest(&make_event("line <NUM>", &line, Level::Info));
+        }
+        let id = store.patterns()[0].id;
+        let lines = store.recent_lines(id);
+        assert_eq!(lines.len(), RECENT_LINES);
+        assert_eq!(lines[0].raw, "line 50");
+        // seq arithmetic still finds lines after the front was dropped
+        assert_eq!(store.context(lines[10].seq, 0)[0].raw, "line 60");
     }
 }
 

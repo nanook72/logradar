@@ -34,6 +34,7 @@ The main event loop in `main.rs::run_tui` is synchronous on the main thread: it 
 - **`config.rs`** — TOML config loading from `--config`, `./logradar.toml`, or `~/.config/logradar/config.toml`. Merges custom profiles with built-ins via `into_profiles()`.
 - **`parse/`** — `LogEvent` struct, structured JSON/logfmt parsing (clusters on the message field), level detection (explicit `[LEVEL]`/`level=` first, then case-insensitive whole-word search), normalization (regex replacement chain: timestamps→UUIDs→IPs→hex→durations→numbers). Applies ANSI stripping before all processing.
 - **`pattern/`** — `PatternStore` groups events into patterns, by Drain template (`pattern/drain.rs`, default) or by exact normalized string (`Clustering::Exact`, `--exact`). `Pattern` tracks rolling window timestamps (VecDeque<Instant>), computes 1m/5m rates, trend direction, spike detection, sparkline history (24 buckets × 5s).
+- **`export.rs`** — Markdown report (code spans sized past any backtick run, `|` escaped) / JSON export of the current view into a new `logradar-<time>.<ext>` (never overwrites); OSC 52 clipboard copy with base64 payload
 - **`search/`** — Fuzzy search over pattern canonical strings using `fuzzy-matcher` SkimMatcherV2. Returns scored results with matched character indices for highlighting
 - **`ingest/`** — Spawns tokio tasks for docker, azure, command, file. Uses `SourceEvent` enum (`Log`/`Status` variants). Each source sends status updates (Starting→Running→Stopped/Error). All commands use `kill_on_drop(true)`.
 - **`alert.rs`** — `[[alerts]]` rules (first_seen / spike / rate, with level/pattern/source globs) evaluated once a second over the pattern store; delivers via argv-only commands and curl webhooks. Per-pattern cooldown, global `max_per_minute`, `startup_grace` so file history isn't "new". `Pattern.id` is the stable key.
@@ -49,6 +50,8 @@ The main event loop in `main.rs::run_tui` is synchronous on the main thread: it 
 - Drain clustering: leaf = (level, token count, first token unless it's a value); the line joins the most similar template if ≥ `similarity` (default 0.6) of tokens match exactly (wildcards don't count), and differing positions become `<*>`. Levels never merge. Exact mode keys a `HashMap<String, usize>` on the normalized string. Both are capped at `MAX_PATTERNS`, evicting the least recently seen (and removing its Drain cluster)
 - CLI args shared between subcommands live in `SourceArgs` / `AnalysisArgs` (clap `flatten`)
 - The 5m rate divides by the time actually observed (min 1m), so new sessions don't show false spikes
+- `PatternStore` keeps the last `RECENT_LINES` (10k) lines with time/source/pattern id for drill-down; `context(seq, n)` finds same-source neighbours by seq arithmetic
+- App-level view: `SortMode` (`s`), `level_filter` (`L`), `flash` status messages; patterns first seen within `NEW_FOR` (60s) show NEW in the trend column
 - Rolling windows use `VecDeque<Instant>` pruned each tick — simple and allocation-free in steady state
 - Sparkline uses separate `current_bucket_count` (in-progress) committed to `sparkline_buckets` ring on 5s tick
 - No async in the TUI loop — crossterm polling + try_recv keeps it simple

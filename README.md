@@ -19,6 +19,8 @@ A modern, colorful, high-performance log analysis TUI built in Rust. Streams log
 - **Alerts** — Run a command or call a webhook (Slack, Discord, Teams…) when a pattern first appears, spikes, or crosses a rate
 - **Spike detection** — Flags patterns whose 1-minute rate is over 3× their 5-minute average (sparkline turns accent on spike)
 - **Live source status** — Per-source status icons: `●` running, `◐` starting (animated), `✖` error, `○` stopped
+- **Drill-down** — Enter on a pattern lists its recent lines with millisecond timestamps; each line shows the lines around it from the same source. `y` copies a line to the clipboard (via the terminal, OSC 52)
+- **Sort, filter, export** — Sort by rate / count / level / newest (`s`), show only warnings or errors (`L`), export the current view to a Markdown report or JSON (`x` / `X`). Patterns first seen in the last minute are marked NEW
 - **Fuzzy search** — Live pattern filtering with matched-character highlighting
 - **ASCII banner** — Matrix-inspired wordmark header with responsive layout (disable with `--no-banner`)
 - **Theme system** — nine themes (matrix, nebula, frostbyte, ember, deepwave, signal, obsidian, notredame, mono); cycle with `t` or pick with `--theme`
@@ -96,6 +98,11 @@ logradar watch --file /var/log/app.log --json | jq .
 | `Esc`            | Exit search / help / picker  |
 | `a`              | Add source (interactive menu)|
 | `n`              | Toggle normalized / raw      |
+| `s`              | Sort: rate / count / level / newest |
+| `L`              | Level filter: all / warn+ / errors |
+| `x` / `X`        | Export current view to Markdown / JSON |
+| `y`              | (Drilldown) copy line to clipboard |
+| `g` / `G`        | (Drilldown) oldest / newest, follow |
 | `t`              | Cycle theme                  |
 | `p`              | Pause / resume ingest        |
 | `P`              | Profile picker               |
