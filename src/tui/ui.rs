@@ -6,7 +6,6 @@ use ratatui::{
     Frame,
 };
 
-use chrono::Local;
 
 use crate::app::{App, AppMode, Pane};
 use crate::ingest::SourceStatus;
@@ -27,7 +26,7 @@ fn header_height(app: &App, terminal_height: u16) -> u16 {
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let theme = app.theme().clone();
-    let h = header_height(app, f.size().height);
+    let h = header_height(app, f.area().height);
 
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -36,7 +35,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             Constraint::Min(3),     // body
             Constraint::Length(1),  // status bar
         ])
-        .split(f.size());
+        .split(f.area());
 
     let body_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -54,7 +53,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         render_patterns(f, body_chunks[1], app, &theme);
         render_details(f, body_chunks[2], app, &theme);
         render_status_bar(f, main_chunks[2], app, &theme);
-        let help_area = centered_rect(60, 80, f.size());
+        let help_area = centered_rect(60, 80, f.area());
         render_help(f, help_area, &theme);
         return;
     }
@@ -79,7 +78,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     render_status_bar(f, main_chunks[2], app, &theme);
 
     if app.mode == AppMode::SourceMenu {
-        let menu_area = centered_rect(60, 70, f.size());
+        let menu_area = centered_rect(60, 70, f.area());
         render_source_menu(f, menu_area, app, &theme);
     }
 }
@@ -420,7 +419,7 @@ fn render_patterns(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let table = Table::new(rows, widths)
         .header(header)
         .block(block)
-        .highlight_style(highlight_style)
+        .row_highlight_style(highlight_style)
         .highlight_symbol("▸ ");
 
     let mut state = TableState::default();
@@ -1085,7 +1084,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn render_header_minimal(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let clock = Local::now().format("%H:%M:%S").to_string();
+    let clock = jiff::ZonedDateTime::now().strftime("%H:%M:%S").to_string();
     let total_rate: f64 = app.source_rates.values().map(|ts| ts.len() as f64).sum();
 
     let left = format!(
@@ -1138,7 +1137,7 @@ fn render_header_minimal(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 }
 
 fn render_header_stats(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let clock = Local::now().format("%H:%M:%S").to_string();
+    let clock = jiff::ZonedDateTime::now().strftime("%H:%M:%S").to_string();
     let total_rate: f64 = app.source_rates.values().map(|ts| ts.len() as f64).sum();
 
     let left = format!(
