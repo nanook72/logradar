@@ -103,6 +103,8 @@ theme = "color"
 highlights = ["panic", "timeout", "oom"]
 ```
 
+Custom profiles are added alongside the built-ins. To override a built-in, use its name (e.g., `[profiles.default]`).
+
 ### Clustering
 
 ```toml
@@ -112,8 +114,6 @@ similarity = 0.6    # share of words that must match to join a template (0.0-1.0
 ```
 
 Raise `similarity` if unrelated lines are merged; lower it to merge more aggressively. Lines at different levels are never merged.
-
-Custom profiles are added alongside the built-ins. To override a built-in, use its name (e.g., `[profiles.default]`).
 
 ## Azure Container Apps Setup
 
