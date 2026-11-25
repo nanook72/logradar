@@ -15,6 +15,7 @@ A modern, colorful, high-performance log analysis TUI built in Rust. Streams log
 - **Structured logs** — JSON (pino, bunyan, zap, Serilog, ECS…) and logfmt lines are clustered on their message field, with the level read from `level`/`severity`
 - **Activity sparklines** — Per-pattern 2-minute history (24 buckets x 5s) using Unicode block characters
 - **Rolling metrics** — 1-minute and 5-minute rate windows with color-coded trend indicators
+- **Alerts** — Run a command or call a webhook (Slack, Discord, Teams…) when a pattern first appears, spikes, or crosses a rate
 - **Spike detection** — Flags patterns whose 1-minute rate is over 3× their 5-minute average (sparkline turns accent on spike)
 - **Live source status** — Per-source status icons: `●` running, `◐` starting (animated), `✖` error, `○` stopped
 - **Fuzzy search** — Live pattern filtering with matched-character highlighting
@@ -114,6 +115,35 @@ similarity = 0.6    # share of words that must match to join a template (0.0-1.0
 ```
 
 Raise `similarity` if unrelated lines are merged; lower it to merge more aggressively. Lines at different levels are never merged.
+
+### Alerts
+
+```toml
+# A new kind of error appeared: desktop notification
+[[alerts]]
+name = "new error"
+when = "first_seen"          # first_seen | spike | rate
+level = "error"              # optional: lowest level that counts
+command = ["notify-send", "logradar: {name}", "{sample}"]
+
+# Timeouts above 20/min from any Docker source: post to Slack
+[[alerts]]
+name = "db timeouts"
+when = "rate"
+rate_per_min = 20
+match = "*timeout*"          # optional: glob over the pattern
+source = "docker/*"          # optional: glob over the source
+cooldown = "10m"             # per pattern; default 5m
+webhook = "https://hooks.slack.com/services/..."
+
+[alert_settings]
+max_per_minute = 10          # across all rules; extra alerts are dropped
+startup_grace = "10s"        # patterns seen this early (e.g. file history) aren't "new"
+```
+
+Placeholders for `command`: `{name}` `{pattern}` `{level}` `{count}` `{rate}` `{source}` `{sample}` `{summary}`.
+
+Log text is untrusted, so `command` is an argument list that is never run through a shell, and each placeholder fills exactly one argument. Don't wrap `{sample}` into a `sh -c` script string yourself; pass it as a separate argument (`["sh", "-c", 'echo "$1"', "sh", "{sample}"]`). Webhooks receive a JSON body (`text`, `alert`, `pattern`, `level`, `count`, `rate_per_min`, `source`, `sample`); the URL and body are handed to curl on stdin, so a secret webhook URL never shows up in `ps`.
 
 ## Azure Container Apps Setup
 

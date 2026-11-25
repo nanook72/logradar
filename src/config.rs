@@ -15,6 +15,10 @@ pub struct Config {
     pub profiles: std::collections::HashMap<String, ProfileConfig>,
     #[serde(default)]
     pub clustering: ClusteringConfig,
+    #[serde(default)]
+    pub alerts: Vec<crate::alert::AlertConfig>,
+    #[serde(default)]
+    pub alert_settings: crate::alert::AlertSettings,
 }
 
 /// `[clustering]`: how lines are grouped into patterns.

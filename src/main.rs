@@ -1,3 +1,4 @@
+mod alert;
 mod app;
 mod config;
 mod discovery;
@@ -117,6 +118,7 @@ async fn run_tui(args: TuiArgs) -> Result<()> {
     } else {
         cfg.clustering.to_clustering()?
     };
+    let mut alerts = alert::AlertEngine::from_config(&cfg.alerts, &cfg.alert_settings)?;
     let default_profile = cfg.default_profile.clone();
     let profiles = cfg.into_profiles();
 
@@ -175,6 +177,7 @@ async fn run_tui(args: TuiArgs) -> Result<()> {
 
     let tick_rate = Duration::from_millis(50);
 
+    let mut last_alert_check = std::time::Instant::now();
     loop {
         if app.needs_clear {
             terminal.clear()?;
@@ -206,6 +209,14 @@ async fn run_tui(args: TuiArgs) -> Result<()> {
         }
 
         app.store.tick();
+        if !alerts.is_empty() && last_alert_check.elapsed() >= Duration::from_secs(1) {
+            last_alert_check = std::time::Instant::now();
+            for firing in alerts.evaluate(app.store.patterns(), last_alert_check) {
+                app.alerts_fired += 1;
+                app.last_alert = Some((last_alert_check, firing.summary()));
+                alert::deliver(firing);
+            }
+        }
         app.tick_source_rates();
         app.tick_count += 1;
 

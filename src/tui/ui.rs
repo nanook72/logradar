@@ -655,7 +655,7 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         theme.text_dim
     };
 
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             " logradar ",
             Style::default()
@@ -703,16 +703,33 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 .bg(theme.status_bar_bg)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("│ ", style),
-        Span::styled("?", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
-        Span::styled("=help ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
-        Span::styled("a", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
-        Span::styled("=add ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
-        Span::styled("/", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
-        Span::styled("=search ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
-        Span::styled("q", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
-        Span::styled("=quit ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
-    ]);
+    ];
+
+    // A recent alert takes the place of the key hints for 30 seconds.
+    match &app.last_alert {
+        Some((at, text)) if at.elapsed() < std::time::Duration::from_secs(30) => {
+            spans.push(Span::styled("│ ", style));
+            spans.push(Span::styled(
+                format!("⚑ {} ", text),
+                Style::default()
+                    .fg(theme.warn)
+                    .bg(theme.status_bar_bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        _ => spans.extend([
+            Span::styled("│ ", style),
+            Span::styled("?", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
+            Span::styled("=help ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
+            Span::styled("a", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
+            Span::styled("=add ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
+            Span::styled("/", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
+            Span::styled("=search ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
+            Span::styled("q", Style::default().fg(theme.accent).bg(theme.status_bar_bg).add_modifier(Modifier::BOLD)),
+            Span::styled("=quit ", Style::default().fg(theme.status_bar_fg).bg(theme.status_bar_bg)),
+        ]),
+    }
+    let line = Line::from(spans);
 
     let bar = Paragraph::new(line).style(style);
     f.render_widget(bar, area);

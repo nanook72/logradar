@@ -64,6 +64,9 @@ pub struct App {
     pub collapsed_groups: HashSet<String>,
     // Cached Azure management access token (pre-fetched during discovery)
     pub azure_token: Option<String>,
+    /// Most recent alert, shown in the status bar.
+    pub last_alert: Option<(std::time::Instant, String)>,
+    pub alerts_fired: u64,
     // Whether to show the ASCII banner header
     pub show_banner: bool,
 }
@@ -106,6 +109,8 @@ impl App {
             source_rates: HashMap::new(),
             collapsed_groups: HashSet::new(),
             azure_token: None,
+            last_alert: None,
+            alerts_fired: 0,
             show_banner: true,
         }
     }

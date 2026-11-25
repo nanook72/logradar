@@ -32,6 +32,7 @@ The main event loop in `main.rs::run_tui` is synchronous on the main thread: it 
 - **`pattern/`** — `PatternStore` groups events into patterns, by Drain template (`pattern/drain.rs`, default) or by exact normalized string (`Clustering::Exact`, `--exact`). `Pattern` tracks rolling window timestamps (VecDeque<Instant>), computes 1m/5m rates, trend direction, spike detection, sparkline history (24 buckets × 5s).
 - **`search/`** — Fuzzy search over pattern canonical strings using `fuzzy-matcher` SkimMatcherV2. Returns scored results with matched character indices for highlighting
 - **`ingest/`** — Spawns tokio tasks for docker, azure, command, file. Uses `SourceEvent` enum (`Log`/`Status` variants). Each source sends status updates (Starting→Running→Stopped/Error). All commands use `kill_on_drop(true)`.
+- **`alert.rs`** — `[[alerts]]` rules (first_seen / spike / rate, with level/pattern/source globs) evaluated once a second over the pattern store; delivers via argv-only commands and curl webhooks. Per-pattern cooldown, global `max_per_minute`, `startup_grace` so file history isn't "new". `Pattern.id` is the stable key.
 - **`discovery.rs`** — Async Docker (`docker ps`) and Azure (`az containerapp list`) auto-discovery.
 - **`tui/ui.rs`** — All ratatui rendering. Uses `Theme` for every color. 3-pane layout with header bar, sparkline column, severity badges, status icons with spinner animation.
 - **`tui/source_menu.rs`** — Source menu state: screens for Docker/Azure discovery (multi-select), file/command text input.
@@ -56,4 +57,5 @@ The main event loop in `main.rs::run_tui` is synchronous on the main thread: it 
 - ANSI escape codes are stripped before normalization/clustering to avoid pattern pollution
 - Log content is attacker-controlled: everything drawn from a source goes through `util::sanitize` (all ANSI sequences, control chars and invisible/bidi format chars removed). JSON messages are sanitized again after decoding, since `\u001b` only becomes ESC then
 - `ingest::forward_lines` is the one line reader for every source: lines capped at `MAX_LINE_BYTES` (64 KiB), lossy UTF-8 so a bad byte can't end a stream; stored samples/signatures are capped again at `parse::MAX_STORED_BYTES` (4 KiB)
+- Alerts never use a shell: `command` is argv and each `{placeholder}` fills one argument; webhook URL + body go to curl via `-K -` on stdin (`ingest::curl_quote`)
 - Bearer tokens never go on a command line: curl gets them as a config file on stdin (`-K -`); URL parts from Azure are validated before use

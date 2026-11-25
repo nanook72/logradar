@@ -453,8 +453,14 @@ fn curl_command(flags: &[&str], url: &str) -> Command {
 
 /// The curl config text carrying `auth_header`, quoted per curl's config syntax.
 fn curl_config(auth_header: &str) -> String {
-    let mut quoted = String::with_capacity(auth_header.len());
-    for c in auth_header.chars() {
+    format!("header = \"{}\"\n", curl_quote(auth_header))
+}
+
+/// Quote a value for a curl config file (`-K`): escape `\` and `"`, and drop
+/// CR/LF so the value can't end its line and start a new directive.
+pub fn curl_quote(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len());
+    for c in value.chars() {
         match c {
             '\\' => quoted.push_str("\\\\"),
             '"' => quoted.push_str("\\\""),
@@ -463,7 +469,7 @@ fn curl_config(auth_header: &str) -> String {
             c => quoted.push(c),
         }
     }
-    format!("header = \"{}\"\n", quoted)
+    quoted
 }
 
 /// Spawn `cmd` (from `curl_command`) and hand it the header on stdin.

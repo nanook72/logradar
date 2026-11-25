@@ -44,6 +44,8 @@ impl Trend {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Pattern {
+    /// Stable id, unique for the life of the store (templates can change).
+    pub id: u64,
     pub canonical: String,
     pub level: Level,
     pub count_total: u64,
@@ -88,6 +90,7 @@ impl Pattern {
         sources.insert(source);
         let sparkline_buckets = VecDeque::with_capacity(SPARKLINE_BUCKET_COUNT);
         Pattern {
+            id: 0,
             canonical,
             level,
             count_total: 1,
@@ -195,6 +198,7 @@ pub struct PatternStore {
     origin: Instant,
     max_patterns: usize,
     evicted: u64,
+    next_id: u64,
 }
 
 impl PatternStore {
@@ -219,6 +223,7 @@ impl PatternStore {
             origin: Instant::now(),
             max_patterns: max_patterns.max(1),
             evicted: 0,
+            next_id: 0,
         }
     }
 
@@ -261,6 +266,8 @@ impl PatternStore {
                 );
                 pattern.observed_5m = now.duration_since(self.origin).min(WINDOW_5M);
                 pattern.cluster = cluster;
+                pattern.id = self.next_id;
+                self.next_id += 1;
                 match cluster {
                     Some(id) => {
                         self.by_cluster.insert(id, idx);
