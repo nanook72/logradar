@@ -9,7 +9,7 @@ A modern, colorful, high-performance log analysis TUI built in Rust. Streams log
 
 ## Features
 
-- **Multi-source streaming** — Docker containers, Azure Container Apps, shell commands, file tailing, and anything piped in (`--file -`)
+- **Multi-source streaming** — Docker containers, Kubernetes pods/deployments/label selectors, Azure Container Apps, shell commands, file tailing, and anything piped in (`--file -`)
 - **Headless modes** — `logradar summary` prints the top patterns (table or JSON, with `--fail-on` for CI); `logradar watch` follows logs without the TUI and prints new patterns and alerts
 - **Interactive source menu** — Press `a` to discover and add sources at runtime
 - **Template clustering (Drain)** — Lines that differ only in a few words share a template: `user alice logged in` + `user bob logged in` → `user <*> logged in`. Typically cuts the pattern count 5-10× on real logs. Use `--exact` to group only identical lines; keeps up to 5,000 patterns, dropping the least recently seen
@@ -52,6 +52,11 @@ logradar tui --cmd "kubectl logs -f deploy/api"
 
 # Tail a log file
 logradar tui --file /var/log/syslog
+
+# Kubernetes: a pod, kind/name, or a label selector, optionally namespace-prefixed
+logradar tui --kube api-7c9f-x2k4
+logradar tui --kube prod:deploy/api
+logradar tui --kube 'prod:app=api,tier!=db'
 
 # Multiple sources at once
 logradar tui --docker web --docker db --file /var/log/app.log

@@ -17,13 +17,14 @@ pub struct Options {
     pub docker: Vec<String>,
     pub cmd: Vec<String>,
     pub file: Vec<String>,
+    pub kube: Vec<ingest::KubeTarget>,
     pub clustering: Clustering,
     pub min_level: Level,
 }
 
 impl Options {
     fn has_sources(&self) -> bool {
-        !(self.docker.is_empty() && self.cmd.is_empty() && self.file.is_empty())
+        !(self.docker.is_empty() && self.cmd.is_empty() && self.file.is_empty() && self.kube.is_empty())
     }
 
     /// Start every source; the returned receiver closes once all have ended.
@@ -37,6 +38,9 @@ impl Options {
         }
         for f in &self.file {
             ingest::spawn_file(f.clone(), follow, tx.clone());
+        }
+        for k in &self.kube {
+            ingest::spawn_kube(k.clone(), follow, tx.clone());
         }
         rx
     }
@@ -89,7 +93,7 @@ pub struct SummaryOptions {
 /// process exit code: 0, 1 if `fail_on` matched, 2 if a source failed.
 pub async fn summary(opts: Options, out: SummaryOptions) -> Result<i32> {
     if !opts.has_sources() {
-        anyhow::bail!("no sources: pass --file (use '-' for stdin), --cmd or --docker");
+        anyhow::bail!("no sources: pass --file (use '-' for stdin), --cmd, --docker or --kube");
     }
     let mut store = PatternStore::with_options(opts.clustering, MAX_PATTERNS);
     let mut counts = Counts::default();
@@ -188,7 +192,7 @@ fn clock() -> String {
 /// (or JSON lines) until the sources end or Ctrl-C.
 pub async fn watch(opts: Options, out: WatchOptions, mut alerts: AlertEngine) -> Result<()> {
     if !opts.has_sources() {
-        anyhow::bail!("no sources: pass --file (use '-' for stdin), --cmd or --docker");
+        anyhow::bail!("no sources: pass --file (use '-' for stdin), --cmd, --docker or --kube");
     }
     if alerts.is_empty() && !out.show_new {
         anyhow::bail!("nothing to report: add [[alerts]] to the config or drop --no-new");

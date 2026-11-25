@@ -210,7 +210,7 @@ fn render_sources(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                     _ => theme.text_dim,
                 };
                 // Show just the name part after the kind prefix
-                let display_name = src.id.split('/').nth(1).unwrap_or(&src.id);
+                let display_name = src.id.split_once('/').map_or(src.id.as_str(), |(_, rest)| rest);
                 ListItem::new(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(format!("{} ", marker), Style::default().fg(marker_color)),
@@ -232,6 +232,7 @@ fn provider_label(kind: &str) -> &str {
     match kind {
         "docker" => "Docker",
         "azure" => "Azure",
+        "kube" => "Kubernetes",
         "command" => "Command",
         "file" => "File",
         "stdin" => "Stdin",
@@ -246,7 +247,7 @@ fn render_patterns(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .active_source_filter
         .as_ref()
         .map(|s| {
-            let short = s.split('/').nth(1).unwrap_or(s);
+            let short = s.split_once('/').map_or(s.as_str(), |(_, rest)| rest);
             format!(" [{}]", short)
         })
         .unwrap_or_default();
@@ -500,7 +501,7 @@ fn render_details(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             let src_list: Vec<&String> = pattern.sources.iter().collect();
             let src_str = src_list
                 .iter()
-                .map(|s| s.split('/').nth(1).unwrap_or(s))
+                .map(|s| s.split_once('/').map_or(s.as_str(), |(_, rest)| rest))
                 .collect::<Vec<_>>()
                 .join(", ");
             lines.push(Line::from(vec![
@@ -916,6 +917,89 @@ fn render_source_menu(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                         Span::styled(c.name.clone(), style),
                         Span::styled(
                             format!("  {}", c.image),
+                            Style::default().fg(theme.text_dim),
+                        ),
+                    ]))
+                })
+                .collect();
+
+            let list = List::new(items).block(block);
+            f.render_widget(list, area);
+        }
+        SourceMenuScreen::KubeDiscovery => {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(theme.modal_border))
+                .style(Style::default().bg(theme.modal_bg))
+                .title(Span::styled(
+                    " Kubernetes Pods (Space=select, Enter=add, r=refresh) ",
+                    Style::default()
+                        .fg(theme.modal_title)
+                        .add_modifier(Modifier::BOLD),
+                ));
+
+            if menu.kube_loading {
+                let p = Paragraph::new(Span::styled(
+                    "Discovering pods (kubectl get pods)...",
+                    Style::default().fg(theme.text_dim),
+                ))
+                .block(block);
+                f.render_widget(p, area);
+                return;
+            }
+
+            if let Some(ref err) = menu.kube_error {
+                let p = Paragraph::new(Span::styled(
+                    err.clone(),
+                    Style::default().fg(theme.error),
+                ))
+                .block(block);
+                f.render_widget(p, area);
+                return;
+            }
+
+            if menu.kube_pods.is_empty() {
+                let p = Paragraph::new(Span::styled(
+                    "No pods found in the current kubectl context",
+                    Style::default().fg(theme.text_dim),
+                ))
+                .block(block);
+                f.render_widget(p, area);
+                return;
+            }
+
+            let items: Vec<ListItem> = menu
+                .kube_pods
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let checkbox = if menu.selected.contains(&i) {
+                        "[x] "
+                    } else {
+                        "[ ] "
+                    };
+                    let cursor = if i == menu.discovery_cursor {
+                        "▸ "
+                    } else {
+                        "  "
+                    };
+                    let style = if i == menu.discovery_cursor {
+                        Style::default()
+                            .fg(theme.selected_fg)
+                            .bg(theme.selected_bg)
+                    } else {
+                        Style::default().fg(theme.text)
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(cursor, Style::default().fg(theme.accent)),
+                        Span::styled(
+                            checkbox.to_string(),
+                            Style::default().fg(theme.success),
+                        ),
+                        Span::styled(format!("{}/{}", c.namespace, c.name), style),
+                        Span::styled(
+                            format!("  {}", c.phase),
                             Style::default().fg(theme.text_dim),
                         ),
                     ]))

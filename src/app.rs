@@ -260,7 +260,7 @@ impl App {
 
     /// Provider ordering for the Sources pane.
     pub fn provider_order() -> &'static [&'static str] {
-        &["docker", "azure", "command", "file", "stdin"]
+        &["docker", "kube", "azure", "command", "file", "stdin"]
     }
 
     /// Build the visible rows in the sources pane: headers + items.
@@ -536,6 +536,15 @@ impl App {
         }
     }
 
+    pub fn add_kube_source(&mut self, target: ingest::KubeTarget) {
+        if let Some(tx) = self.tx.clone() {
+            let (info, handle) = ingest::spawn_kube(target, ingest::Follow::Yes, tx);
+            let id = info.id.clone();
+            self.sources.push(info);
+            self.handles.insert(id, handle);
+        }
+    }
+
     pub fn add_file_source(&mut self, path: String) {
         if let Some(tx) = self.tx.clone() {
             let (info, handle) = ingest::spawn_file(path, ingest::Follow::Yes, tx);
@@ -582,11 +591,13 @@ impl App {
     pub fn open_source_menu(&mut self) {
         self.source_menu.reset();
         self.source_menu.docker_loading = true;
+        self.source_menu.kube_loading = true;
         self.source_menu.azure_loading = true;
         self.mode = AppMode::SourceMenu;
-        // Pre-fetch both Docker and Azure discovery in parallel
+        // Pre-fetch Docker, Kubernetes and Azure discovery in parallel
         if let Some(dtx) = self.discovery_tx.clone() {
             crate::discovery::discover_docker(dtx.clone());
+            crate::discovery::discover_kube(dtx.clone());
             crate::discovery::discover_azure(dtx);
         }
     }
@@ -601,6 +612,15 @@ impl App {
             DiscoveryResult::Docker(Err(e)) => {
                 self.source_menu.docker_loading = false;
                 self.source_menu.docker_error = Some(e);
+            }
+            DiscoveryResult::Kube(Ok(pods)) => {
+                self.source_menu.kube_pods = pods;
+                self.source_menu.kube_loading = false;
+                self.source_menu.kube_error = None;
+            }
+            DiscoveryResult::Kube(Err(e)) => {
+                self.source_menu.kube_loading = false;
+                self.source_menu.kube_error = Some(e);
             }
             DiscoveryResult::Azure(Ok(apps)) => {
                 self.source_menu.azure_apps = apps;
@@ -625,6 +645,20 @@ impl App {
         for idx in selected {
             if let Some(c) = self.source_menu.docker_containers.get(idx) {
                 self.add_docker_source(c.name.clone());
+            }
+        }
+    }
+
+    pub fn spawn_selected_kube_sources(&mut self) {
+        let selected: Vec<usize> = self.source_menu.selected.iter().copied().collect();
+        for idx in selected {
+            let target = self
+                .source_menu
+                .kube_pods
+                .get(idx)
+                .and_then(|p| ingest::KubeTarget::parse(&format!("{}:{}", p.namespace, p.name)).ok());
+            if let Some(t) = target {
+                self.add_kube_source(t);
             }
         }
     }

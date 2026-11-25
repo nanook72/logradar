@@ -46,11 +46,16 @@ struct SourceArgs {
     /// File path to tail ('-' reads standard input)
     #[arg(long)]
     file: Vec<String>,
+
+    /// Kubernetes logs: pod, kind/name (deploy/api) or label selector
+    /// (app=api), optionally prefixed with "namespace:"
+    #[arg(long, value_name = "TARGET")]
+    kube: Vec<String>,
 }
 
 impl SourceArgs {
     fn is_empty(&self) -> bool {
-        self.docker.is_empty() && self.cmd.is_empty() && self.file.is_empty()
+        self.docker.is_empty() && self.cmd.is_empty() && self.file.is_empty() && self.kube.is_empty()
     }
 }
 
@@ -143,6 +148,10 @@ enum Commands {
     Watch(WatchArgs),
 }
 
+fn parse_kube_targets(specs: &[String]) -> Result<Vec<ingest::KubeTarget>> {
+    specs.iter().map(|s| ingest::KubeTarget::parse(s)).collect()
+}
+
 fn parse_level_arg(flag: &str, value: &str) -> Result<parse::Level> {
     parse::level_from_str(value)
         .ok_or_else(|| anyhow::anyhow!("{} '{}': use trace, debug, info, warn or error", flag, value))
@@ -164,6 +173,7 @@ fn headless_options(
         docker: sources.docker,
         cmd: sources.cmd,
         file: sources.file,
+        kube: parse_kube_targets(&sources.kube)?,
         clustering,
         min_level: parse_level_arg("--level", level)?,
     };
@@ -278,6 +288,9 @@ async fn run_tui(args: TuiArgs) -> Result<()> {
     }
     for path in sources.file {
         app.add_file_source(path);
+    }
+    for target in parse_kube_targets(&sources.kube)? {
+        app.add_kube_source(target);
     }
 
     // Keep tx alive for dynamic source additions (drop our local clone)
@@ -526,17 +539,23 @@ fn handle_source_menu_key(app: &mut app::App, key: event::KeyEvent) {
                         app.source_menu.selected.clear();
                     }
                     1 => {
+                        // Kubernetes Pod — results already pre-fetched
+                        app.source_menu.screen = SourceMenuScreen::KubeDiscovery;
+                        app.source_menu.discovery_cursor = 0;
+                        app.source_menu.selected.clear();
+                    }
+                    2 => {
                         // File (tail)
                         app.source_menu.screen = SourceMenuScreen::FileInput;
                         app.source_menu.text_input.clear();
                     }
-                    2 => {
+                    3 => {
                         // Azure Container App — results already pre-fetched
                         app.source_menu.screen = SourceMenuScreen::AzureDiscovery;
                         app.source_menu.discovery_cursor = 0;
                         app.source_menu.selected.clear();
                     }
-                    3 => {
+                    4 => {
                         // Custom Command
                         app.source_menu.screen = SourceMenuScreen::CommandInput;
                         app.source_menu.text_input.clear();
@@ -576,6 +595,41 @@ fn handle_source_menu_key(app: &mut app::App, key: event::KeyEvent) {
             }
             KeyCode::Enter => {
                 app.spawn_selected_docker_sources();
+                app.mode = AppMode::Normal;
+                app.needs_clear = true;
+            }
+            _ => {}
+        },
+        SourceMenuScreen::KubeDiscovery => match key.code {
+            KeyCode::Esc => {
+                app.source_menu.screen = SourceMenuScreen::MainMenu;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if app.source_menu.discovery_cursor > 0 {
+                    app.source_menu.discovery_cursor -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let count = app.source_menu.kube_pods.len();
+                if count > 0 && app.source_menu.discovery_cursor < count - 1 {
+                    app.source_menu.discovery_cursor += 1;
+                }
+            }
+            KeyCode::Char(' ') => {
+                app.source_menu.toggle_selection();
+            }
+            KeyCode::Char('r') => {
+                app.source_menu.kube_loading = true;
+                app.source_menu.kube_error = None;
+                app.source_menu.kube_pods.clear();
+                app.source_menu.selected.clear();
+                app.source_menu.discovery_cursor = 0;
+                if let Some(dtx) = app.discovery_tx.clone() {
+                    discovery::discover_kube(dtx);
+                }
+            }
+            KeyCode::Enter => {
+                app.spawn_selected_kube_sources();
                 app.mode = AppMode::Normal;
                 app.needs_clear = true;
             }

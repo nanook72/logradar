@@ -45,6 +45,19 @@ async fn forward_lines<R>(reader: R, source_id: &str, tx: mpsc::Sender<SourceEve
 where
     R: tokio::io::AsyncRead + Unpin,
 {
+    forward_lines_with(reader, source_id, tx, announce_running, None).await
+}
+
+/// `forward_lines`, passing each line through `transform` first.
+async fn forward_lines_with<R>(
+    reader: R,
+    source_id: &str,
+    tx: mpsc::Sender<SourceEvent>,
+    announce_running: bool,
+    transform: Option<fn(String) -> String>,
+) where
+    R: tokio::io::AsyncRead + Unpin,
+{
     let mut reader = BufReader::new(reader);
     let mut buf: Vec<u8> = Vec::new();
     let mut truncated = false;
@@ -80,6 +93,9 @@ where
             }
             buf.clear();
             truncated = false;
+            if let Some(f) = transform {
+                line = f(line);
+            }
 
             if first {
                 let _ = tx
@@ -189,6 +205,182 @@ async fn run_docker(container: &str, follow: Follow, source_id: &str, tx: mpsc::
     // Child is held in scope — kill_on_drop ensures cleanup on task abort
     let _ = child.wait().await;
     Ok(())
+}
+
+// --- Kubernetes source ---
+
+/// What to read logs from, as written after `--kube`:
+/// `pod`, `kind/name` (e.g. `deploy/api`) or a label selector (`app=api`),
+/// optionally prefixed with `namespace:`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KubeTarget {
+    pub namespace: Option<String>,
+    pub what: KubeWhat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KubeWhat {
+    /// A pod name or `kind/name`.
+    Resource(String),
+    /// A label selector such as `app=api,tier!=db`.
+    Selector(String),
+}
+
+/// DNS-1123-ish names and resource kinds: what Kubernetes allows.
+fn is_kube_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 253
+        && !s.starts_with('-')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.'))
+}
+
+impl KubeTarget {
+    pub fn parse(spec: &str) -> Result<KubeTarget> {
+        let (namespace, rest) = match spec.split_once(':') {
+            Some((ns, rest)) => (Some(ns), rest),
+            None => (None, spec),
+        };
+        if let Some(ns) = namespace {
+            if !is_kube_name(ns) {
+                anyhow::bail!("bad Kubernetes namespace '{}'", ns);
+            }
+        }
+        let what = if rest.contains('=') {
+            let ok = rest
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '=' | '!' | ','));
+            if !ok || rest.starts_with('-') {
+                anyhow::bail!("bad Kubernetes label selector '{}'", rest);
+            }
+            KubeWhat::Selector(rest.to_string())
+        } else {
+            let ok = match rest.split_once('/') {
+                Some((kind, name)) => is_kube_name(kind) && is_kube_name(name),
+                None => is_kube_name(rest),
+            };
+            if !ok {
+                anyhow::bail!("bad Kubernetes target '{}' (use pod, kind/name or label=value)", rest);
+            }
+            KubeWhat::Resource(rest.to_string())
+        };
+        Ok(KubeTarget {
+            namespace: namespace.map(str::to_string),
+            what,
+        })
+    }
+
+    /// Source id shown in the UI.
+    pub fn id(&self) -> String {
+        let what = match &self.what {
+            KubeWhat::Resource(r) => r.clone(),
+            KubeWhat::Selector(s) => format!("[{}]", s),
+        };
+        match &self.namespace {
+            Some(ns) => format!("kube/{}/{}", ns, what),
+            None => format!("kube/{}", what),
+        }
+    }
+
+    /// `kubectl logs` arguments. Values use `--opt=value` and the resource
+    /// comes after `--`, so nothing can be read as another option.
+    pub fn kubectl_args(&self, follow: Follow) -> Vec<String> {
+        let mut args = vec!["logs".to_string()];
+        if follow == Follow::Yes {
+            args.push("--follow".into());
+            args.push("--tail=100".into());
+        }
+        args.push("--all-containers=true".into());
+        // "[pod/name/container] " before each line, stripped again on read;
+        // with several pods/containers it keeps lines from interleaving
+        // mid-stream ambiguously in kubectl's own output.
+        args.push("--prefix=true".into());
+        if let Some(ns) = &self.namespace {
+            args.push(format!("--namespace={}", ns));
+        }
+        match &self.what {
+            KubeWhat::Selector(sel) => {
+                args.push(format!("--selector={}", sel));
+                args.push("--max-log-requests=20".into());
+            }
+            KubeWhat::Resource(r) => {
+                args.push("--".into());
+                args.push(r.clone());
+            }
+        }
+        args
+    }
+}
+
+/// Drop kubectl's `[pod/name/container] ` prefix so pod names (which change
+/// with every rollout) don't split patterns.
+fn strip_kube_prefix(line: String) -> String {
+    if line.starts_with("[pod/") {
+        if let Some(end) = line.find("] ") {
+            return line[end + 2..].to_string();
+        }
+    }
+    line
+}
+
+pub fn spawn_kube(
+    target: KubeTarget,
+    follow: Follow,
+    tx: mpsc::Sender<SourceEvent>,
+) -> (SourceInfo, tokio::task::JoinHandle<()>) {
+    let id = target.id();
+    let info = SourceInfo {
+        id: id.clone(),
+        kind: "kube".into(),
+        status: SourceStatus::Starting,
+    };
+    let handle = tokio::spawn(async move {
+        let child = Command::new("kubectl")
+            .args(target.kubectl_args(follow))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn();
+        let mut child = match child {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx
+                    .send(SourceEvent::Status {
+                        source: id.clone(),
+                        status: SourceStatus::Error(format!("kubectl: {}", e)),
+                    })
+                    .await;
+                return;
+            }
+        };
+        if let Some(out) = child.stdout.take() {
+            forward_lines_with(out, &id, tx.clone(), true, Some(strip_kube_prefix)).await;
+        }
+        let status = child.wait().await;
+        let failed = !matches!(status, Ok(s) if s.success());
+        let detail = if failed {
+            let mut err = String::new();
+            if let Some(mut e) = child.stderr.take() {
+                use tokio::io::AsyncReadExt;
+                let mut buf = vec![0u8; 4096];
+                let n = e.read(&mut buf).await.unwrap_or(0);
+                err = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+            }
+            Some(crate::util::sanitize(if err.is_empty() { "kubectl exited with an error" } else { &err }))
+        } else {
+            None
+        };
+        let _ = tx
+            .send(SourceEvent::Status {
+                source: id,
+                status: match detail {
+                    Some(d) => SourceStatus::Error(d),
+                    None => SourceStatus::Stopped,
+                },
+            })
+            .await;
+    });
+    (info, handle)
 }
 
 // --- Command source ---
@@ -807,5 +999,48 @@ mod security_tests {
         ] {
             assert!(!is_container_apps_domain(bad), "{:?}", bad);
         }
+    }
+
+    #[test]
+    fn kube_targets_parse_and_build_safe_args() {
+        let t = KubeTarget::parse("api-7c9f").unwrap();
+        assert_eq!(t.id(), "kube/api-7c9f");
+        assert_eq!(
+            t.kubectl_args(Follow::Yes),
+            ["logs", "--follow", "--tail=100", "--all-containers=true", "--prefix=true", "--", "api-7c9f"]
+        );
+        let t = KubeTarget::parse("prod:deploy/api").unwrap();
+        assert_eq!(t.id(), "kube/prod/deploy/api");
+        assert_eq!(
+            t.kubectl_args(Follow::No),
+            ["logs", "--all-containers=true", "--prefix=true", "--namespace=prod", "--", "deploy/api"]
+        );
+        let t = KubeTarget::parse("prod:app=api,tier!=db").unwrap();
+        assert_eq!(t.id(), "kube/prod/[app=api,tier!=db]");
+        let args = t.kubectl_args(Follow::Yes);
+        assert!(args.contains(&"--selector=app=api,tier!=db".to_string()));
+        assert!(!args.contains(&"--".to_string()));
+        for bad in [
+            "",
+            "--all-namespaces",
+            "-n",
+            "ns:-x",
+            "a b",
+            "deploy/",
+            "/api",
+            "pod;rm",
+            "ns with space:api",
+            "app=$(id)",
+            "-l=app=x",
+        ] {
+            assert!(KubeTarget::parse(bad).is_err(), "{:?} should be rejected", bad);
+        }
+    }
+
+    #[test]
+    fn kube_prefix_is_stripped() {
+        assert_eq!(strip_kube_prefix("[pod/api-7c9f-x2k4/api] GET /health 200".into()), "GET /health 200");
+        assert_eq!(strip_kube_prefix("[INFO] not a kube prefix".into()), "[INFO] not a kube prefix");
+        assert_eq!(strip_kube_prefix("[pod/unterminated".into()), "[pod/unterminated");
     }
 }
